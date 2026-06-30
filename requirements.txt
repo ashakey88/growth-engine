@@ -1,0 +1,8 @@
+duckdb>=1.0.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+streamlit>=1.30.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+# Optional, only needed for the Cloudflare R2 storage backend:
+# s3fs>=2024.2.0
