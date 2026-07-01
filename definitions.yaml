@@ -125,6 +125,10 @@ metrics:
     cost_per_add_to_cart:      {formula: "spend / add_to_carts",          format: currency, cf: reverse}
     cost_per_checkout:         {formula: "spend / checkouts",             format: currency, cf: reverse}
     platform_roas:             {formula: "platform_conversion_value_7d / spend", format: ratio, cf: standard}
+    contribution:              {formula: "gross_profit - spend",            format: currency, cf: standard}
+    contribution_margin:       {formula: "(gross_profit - spend) / revenue", format: percent, cf: standard, dp: 1}
+    mer:                       {formula: "revenue / spend",                 format: ratio,    cf: standard}
+    breakeven_roas:            {formula: "revenue / gross_profit",          format: ratio,    cf: reverse}
     ctr:                       {formula: "clicks / impressions",          format: percent,  cf: standard}
     cpc:                       {formula: "spend / clicks",                format: currency, cf: reverse}
     cpm:                       {formula: "1000 * spend / impressions",    format: currency, cf: reverse}
@@ -185,6 +189,10 @@ display:
   cost_per_add_to_cart:          "Cost per Add to Cart"
   cost_per_checkout:             "Cost per Checkout"
   platform_roas:                 "Platform ROAS"
+  contribution:                  "Contribution (CM2)"
+  contribution_margin:           "Contribution Margin"
+  mer:                           "MER"
+  breakeven_roas:                "Breakeven ROAS"
   ctr:                           "CTR"
   cpc:                           "CPC"
   cpm:                           "CPM"

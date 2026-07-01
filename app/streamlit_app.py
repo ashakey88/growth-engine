@@ -57,6 +57,15 @@ KPI_GROUPS = {
 }
 ALL_KPIS = [m for g in KPI_GROUPS.values() for m in g]
 
+SECTIONS = {
+    "Reports": ["eCommerce", "Profitability", "Customers", "Product", "Acquisition", "Forecast"],
+    "Analysis": ["Order Insight"],
+    "Intelligence": ["Exec Digest", "AI Analyst", "Benchmarks", "Data Trust"],
+    "Utility": ["Data Table", "Connect sources", "Targets"],
+}
+PERIOD_PAGES = {"eCommerce", "Profitability", "Customers", "Product", "Acquisition",
+                "Forecast", "Order Insight", "Benchmarks", "Data Table"}
+
 
 @st.cache_resource(show_spinner="Setting up demo data…")
 def _bootstrap():
@@ -102,8 +111,8 @@ with st.sidebar:
     st.markdown('<div class="ml-eyebrow">Malleson Labs</div>'
                 '<div class="ml-brand">The Growth Engine</div>', unsafe_allow_html=True)
     st.markdown("---")
-    page = st.radio("Navigate", ["Report", "Data Table", "Connect sources", "Targets"],
-                    label_visibility="collapsed")
+    section = st.radio("Section", list(SECTIONS.keys()), horizontal=False)
+    page = st.radio(section, SECTIONS[section], label_visibility="collapsed")
 
 fact = get_fact()
 if fact is None or fact.empty:
@@ -114,7 +123,7 @@ ref = fact["date"].max().date()
 FILTER_DIMS = ["marketing_channel_group", "marketing_channel", "paid_ad_platform",
                "geo_region", "geo_market", "device"]
 
-if page in ("Report", "Data Table"):
+if page in PERIOD_PAGES:
     with st.sidebar:
         st.markdown("**Period**")
         period = st.selectbox("Period", analytics.PERIODS,
@@ -215,10 +224,22 @@ def _comparison_section(dimension, metrics):
 BIZ = ["revenue", "visits", "orders", "conversion_rate", "aov", "spend", "roas"]
 
 
+def _period_caption():
+    return (f"{period} · {cur[0]} → {cur[1]}  ·  {comparison.lower()}"
+            + ("" if conn_state()["active_source"] == "shopify" else "  ·  demo data"))
+
+
+def _kpi_grid(metrics):
+    rows = analytics.kpi_rows(fact, metrics, cur, cmp, targets, filters)
+    cols = st.columns(min(len(metrics), 4))
+    for i, row in enumerate(rows):
+        with cols[i % len(cols)]:
+            _kpi_card(row)
+
+
 def page_report():
-    st.title("Report")
-    st.caption(f"{period} · {cur[0]} → {cur[1]}  ·  {comparison.lower()}"
-               + ("" if conn_state()["active_source"] == "shopify" else "  ·  demo data"))
+    st.title("eCommerce")
+    st.caption(_period_caption())
     tabs = st.tabs(["Summary", "Trends", "Channels", "Regions", "Devices"])
     with tabs[0]:
         render_summary()
@@ -343,8 +364,151 @@ def page_targets():
             st.rerun()
 
 
-PAGES = {"Report": page_report, "Data Table": page_data_table,
-         "Connect sources": page_connect, "Targets": page_targets}
+# ── Profitability (flagship — built from data in hand) ───────────
+def page_profitability():
+    st.title("Profitability")
+    st.caption(_period_caption())
+    st.markdown("#### Headline")
+    _kpi_grid(["revenue", "gross_profit", "gross_margin_pct", "contribution"])
+    _kpi_grid(["contribution_margin", "spend", "mer", "discount_rate"])
+
+    st.markdown("#### Contribution waterfall")
+    cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    t = analytics.totals(cur_df, ["gross_sales", "discounts", "revenue", "cogs",
+                                  "gross_profit", "spend"])
+    contribution = t["gross_profit"] - t["spend"]
+    steps = [("Gross Sales", t["gross_sales"]), ("Discounts", -t["discounts"]),
+             ("Net Revenue", t["revenue"]), ("COGS", -t["cogs"]),
+             ("Gross Profit", t["gross_profit"]), ("Marketing", -t["spend"]),
+             ("Contribution (CM2)", contribution)]
+    wf = pd.DataFrame({"Line": [s[0] for s in steps],
+                       "£": [f"£{s[1]:,.0f}" for s in steps]})
+    st.table(wf)
+    st.caption("Contribution = Gross Profit − Marketing spend. Fulfilment, payment "
+               "fees and returns (CM3) come once those data sources are connected.")
+
+    st.markdown("#### Contribution & MER over time")
+    tr = analytics.trend(cur_df, "contribution", "W").set_index("period")
+    st.line_chart(tr, y="contribution", height=280)
+
+
+# ── Data Trust ───────────────────────────────────────────────────
+def page_data_trust():
+    st.title("Data Trust")
+    st.caption("Source connections, freshness and coverage — so you can trust the numbers.")
+    conn = conn_state()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Data through", str(fact["date"].max().date()))
+    c2.metric("Sales source", "Shopify (live)" if conn.get("active_source") == "shopify" else "Demo data")
+    c3.metric("Fact rows", f"{len(fact):,}")
+    keys = {"Shopify": config.SHOPIFY_KEY, "GA4": config.GA4_KEY,
+            "Meta": config.META_KEY, "Google Ads": config.GOOGLE_KEY,
+            "Targets": config.TARGETS_KEY}
+    counts = fact.groupby("source").size().to_dict()
+    src_map = {"Shopify": "shopify", "GA4": "ga4", "Meta": "meta", "Google Ads": "google_ads"}
+    rows = [{"Source": name, "Connected": "✅" if storage.exists(key) else "—",
+             "Fact rows": f"{counts.get(src_map.get(name, ''), 0):,}" if name in src_map else "—"}
+            for name, key in keys.items()]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+# ── Informative stubs for the rest of the suite ──────────────────
+def _stub(title, purpose, sections, needs=None, tier="Report"):
+    st.title(title)
+    st.caption(purpose)
+    st.info(f"**Coming next.** This {tier.lower()} is scaffolded — here's what it will contain.")
+    st.markdown("**Planned sections**")
+    for s in sections:
+        st.markdown(f"- {s}")
+    if needs:
+        st.warning(f"Unlocks when connected: {needs}")
+
+
+def page_customers():
+    _stub("Customers & Retention",
+          "Are your customers worth more than they cost? Where profit compounds.",
+          ["LTV, LTV:CAC ratio and payback period",
+           "New vs returning revenue split",
+           "Cohort retention curves + repeat rate",
+           "Email / CRM section (flows, campaigns, revenue per recipient)"],
+          "Shopify customer history (have it) · Klaviyo for the Email/CRM section")
+
+
+def page_product():
+    _stub("Product / Merchandising",
+          "What's really driving your margin? Everything, per product.",
+          ["Sales & margin by product / category (discount depth per SKU)",
+           "Product funnel: views → add-to-cart rate → checkout → conversion",
+           "Stock & availability: sell-through, days of cover, lost sales from OOS",
+           "Returns: rate, reasons and margin impact by product"],
+          "GA4 item-level events · Shopify inventory · Shopify returns/refunds")
+
+
+def page_acquisition():
+    _stub("Acquisition / Paid Media",
+          "Where should your next £ of spend go?",
+          ["CAC and new-customer ROAS by channel / campaign",
+           "Payback period and marginal efficiency",
+           "Channel truth: platform-reported vs actual (reconciliation)",
+           "SEO section: organic performance by landing page / query"],
+          "Search Console for the SEO section")
+
+
+def page_forecast():
+    _stub("Forecast & Pacing",
+          "Are we going to hit plan?",
+          ["Run-rate vs target for the period",
+           "Projected month / quarter / year-end",
+           "Simple what-if scenarios (spend, AOV, conversion)"],
+          "Uses your Targets — no new data needed")
+
+
+def page_order_insight():
+    _stub("Order Insight",
+          "Operator analysis bench — explore, find the story, roll findings into the monthly reports.",
+          ["Order value distribution (median, P90, threshold effects)",
+           "AOV contributors: units per order × price × mix",
+           "Basket composition and cross-sell (what's bought together)",
+           "Free-shipping / promo threshold impact on AOV"],
+          "Shopify line-item data for basket/mix analysis", tier="Analysis")
+
+
+def page_exec_digest():
+    _stub("Exec Digest",
+          "The Monday-morning one-pager: the 2–3 numbers that moved, and why.",
+          ["Headline P&L + growth vs LY / target",
+           "Automatic 'what changed' callouts (alerts)",
+           "Roll-up of the key signal from every report"],
+          "Composes the other reports — built after they land", tier="layer")
+
+
+def page_ai_analyst():
+    _stub("AI Analyst",
+          "Ask anything about your commercial data in plain English.",
+          ["Natural-language questions → answers over the fact model",
+           "On-demand deeper analysis",
+           "Explains the 'why' behind any metric move"],
+          "Text-to-SQL over semantics.py — built once the fact model is stable", tier="layer")
+
+
+def page_benchmarks():
+    _stub("Benchmarks",
+          "Is this good? Context that turns your numbers into judgement.",
+          ["Your key metrics vs category benchmarks (conversion, AOV, margin, returns)",
+           "Where you sit on the efficiency curve as you scale",
+           "Powered by Malleson Labs research"],
+          "Benchmark dataset from Malleson research", tier="layer")
+
+
+PAGES = {
+    "eCommerce": page_report, "Profitability": page_profitability,
+    "Customers": page_customers, "Product": page_product,
+    "Acquisition": page_acquisition, "Forecast": page_forecast,
+    "Order Insight": page_order_insight, "Exec Digest": page_exec_digest,
+    "AI Analyst": page_ai_analyst, "Benchmarks": page_benchmarks,
+    "Data Trust": page_data_trust, "Data Table": page_data_table,
+    "Connect sources": page_connect, "Targets": page_targets,
+}
 try:
     PAGES[page]()
 except Exception as e:
