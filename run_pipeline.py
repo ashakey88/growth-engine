@@ -1,58 +1,64 @@
 """End-to-end ELT runner.
 
-  Extract  ->  Load (Parquet to local/R2)  ->  Transform (DuckDB marts)
+  Extract (mock or real)  ->  per-source parquet  ->  build_fact  ->  fact.parquet
 
-Uses real Shopify data when credentials are set, otherwise generates mock data
-so the whole pipeline runs at zero cost.
+  python run_pipeline.py            # all-mock, zero cost
+  python run_pipeline.py shopify    # real Shopify (needs env creds) + mock marketing
 
-    python run_pipeline.py
-
-The run_mock() / run_shopify() helpers are also called directly by the
-connect screen in the Streamlit app.
+The run_mock() / sync_shopify() helpers are also called by the app's connect
+screen.
 """
 from __future__ import annotations
 
+import sys
+
 import config
-from ingest import storage
-from transform import build_models
+from ingest import mock_source, storage
+from transform import build_fact
 
 
-def _load_and_build(df) -> int:
-    """Write orders to storage and rebuild the DuckDB marts. Returns row count."""
-    storage.write_dataframe(df, source="shopify", dataset="orders",
-                            date_col="created_at")
-    build_models.build()
-    return len(df)
+def _ensure_marketing_mock() -> None:
+    """Populate GA4/Meta/Google/targets with mock data if not already present,
+    so the dashboard is fully populated even when only Shopify is connected."""
+    if not storage.exists(config.GA4_KEY):
+        storage.write_df(mock_source.ga4_data(), config.GA4_KEY)
+    if not storage.exists(config.META_KEY):
+        storage.write_df(mock_source.meta_data(), config.META_KEY)
+    if not storage.exists(config.GOOGLE_KEY):
+        storage.write_df(mock_source.google_ads_data(), config.GOOGLE_KEY)
+    if not storage.exists(config.TARGETS_KEY):
+        storage.write_df(mock_source.targets(), config.TARGETS_KEY)
 
 
 def run_mock() -> int:
-    """Generate mock orders and build the marts."""
-    from ingest import mock_source
+    """Write mock data for every source + targets, then build the fact table."""
+    storage.write_df(mock_source.shopify_orders(), config.SHOPIFY_KEY)
+    storage.write_df(mock_source.ga4_data(), config.GA4_KEY)
+    storage.write_df(mock_source.meta_data(), config.META_KEY)
+    storage.write_df(mock_source.google_ads_data(), config.GOOGLE_KEY)
+    storage.write_df(mock_source.targets(), config.TARGETS_KEY)
+    return build_fact.build()
 
-    return _load_and_build(mock_source.generate_orders())
 
-
-def run_shopify(store: str, token: str) -> int:
-    """Pull real orders from a Shopify store and build the marts."""
+def sync_shopify(store: str, token: str) -> int:
+    """Pull real Shopify orders, keep mock marketing lanes, rebuild the fact table."""
     from ingest import shopify
 
-    return _load_and_build(shopify.fetch_orders(store=store, token=token))
-
-
-def extract_and_load() -> None:
-    if config.shopify_configured():
-        print(f"› Extracting orders from Shopify store {config.SHOPIFY_STORE} …")
-        n = run_shopify(config.SHOPIFY_STORE, config.SHOPIFY_ACCESS_TOKEN)
-    else:
-        print("› No Shopify credentials found — generating mock order data …")
-        n = run_mock()
-    print(f"  loaded {n:,} orders  (backend: {config.STORAGE_BACKEND})")
+    _ensure_marketing_mock()
+    storage.write_df(shopify.fetch_orders(store=store, token=token), config.SHOPIFY_KEY)
+    return build_fact.build()
 
 
 def main() -> None:
     print("=== Growth Engine ELT ===")
-    extract_and_load()
-    print("Done. Run the dashboard with:  streamlit run app/streamlit_app.py")
+    if len(sys.argv) > 1 and sys.argv[1] == "shopify":
+        if not config.shopify_configured():
+            raise SystemExit("Set SHOPIFY_STORE and SHOPIFY_ACCESS_TOKEN first.")
+        n = sync_shopify(config.SHOPIFY_STORE, config.SHOPIFY_ACCESS_TOKEN)
+    else:
+        print("› Generating mock data for all sources …")
+        n = run_mock()
+    print(f"Done. {n:,} fact rows. Run:  streamlit run app/streamlit_app.py")
 
 
 if __name__ == "__main__":

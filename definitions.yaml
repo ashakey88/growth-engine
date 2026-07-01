@@ -1,0 +1,199 @@
+# ============================================================================
+# definitions.yaml — SINGLE SOURCE OF TRUTH for dimensions and metrics.
+# Both build_fact.py and the app read this via semantics.py. Edit rules here only.
+#
+# Growth Engine: Shopify is the sales source of truth (orders/revenue), GA4 the
+# traffic/funnel source, Meta/Google the ad-platform source.
+# ============================================================================
+
+sentinels:
+  dimension_na: "(n/a)"
+
+# ----------------------------------------------------------------------------
+# DIMENSIONS
+# ----------------------------------------------------------------------------
+dimensions:
+
+  marketing_channel_group:
+    paid_channels: ["Paid Search","Paid Social","Paid Shopping","Paid Video","Paid Other","Display","Cross-network"]
+    paid_label: "Paid"
+    unpaid_label: "Unpaid"
+
+  # Standard GA4 default channel grouping, reproduced from source/medium.
+  marketing_channel:
+    fallback: "Unassigned"
+    paid_medium_regex: "^(.*cp.*|ppc|paid.*|retargeting)$"
+    source_categories:
+      search:  [google, bing, yahoo, duckduckgo, ecosia, baidu, yandex, ask, aol, brave, qwant]
+      social:  [facebook, instagram, fb, ig, tiktok, twitter, "x", "t.co", pinterest, linkedin,
+                youtube, reddit, snapchat, threads, whatsapp, telegram, tumblr]
+      shopping: [amazon, ebay, etsy, "google shopping", shopping]
+      video:   [youtube, vimeo, dailymotion, twitch]
+
+  paid_ad_platform:
+    fallback: "(n/a)"
+    rules:
+      - {source_contains: "bing",      medium_in: ["ppc","cpc"],   platform: "Microsoft"}
+      - {source_contains: "microsoft", medium_in: ["ppc","cpc"],   platform: "Microsoft"}
+      - {source_contains: "google",    medium_in: ["cpc","ppc"],   platform: "Google"}
+      - {source_contains: "facebook",  medium_in: ["paid_social"], platform: "Meta"}
+      - {source_contains: "fb",        medium_in: ["paid_social"], platform: "Meta"}
+      - {source_contains: "instagram", medium_in: ["paid_social"], platform: "Meta"}
+      - {source_contains: "tiktok",    medium_in: ["paid_social"], platform: "Tiktok"}
+
+  marketing_campaign:
+    meta_exception: true
+
+  paid_campaign_type:
+    brand_keyword: "brand"
+    tofu_keyword: "tofu"
+    bofu_keywords: ["mofu","bofu"]
+    pmax_types: ["PERFORMANCE_MAX"]
+    search_types: ["SEARCH"]
+    paid_search_other: "Other"
+    paid_social_other: "Other"
+
+  device:
+    map: {desktop: "Desktop", mobile: "Mobile", tablet: "Tablet"}
+    fallback: "Other"
+
+  # Region: US | UK | EU (all European countries except UK) | ROW
+  geo:
+    markets:
+      US: ["United States","US","USA"]
+      UK: ["United Kingdom","GB","UK"]
+      FR: ["France","FR"]
+      DE: ["Germany","DE"]
+      IT: ["Italy","IT"]
+      ES: ["Spain","ES"]
+      CA: ["Canada","CA"]
+      AU: ["Australia","AU"]
+    europe_countries: ["Albania","AL","Andorra","AD","Austria","AT","Belarus","BY","Belgium","BE",
+      "Bosnia and Herzegovina","BA","Bulgaria","BG","Croatia","HR","Cyprus","CY","Czechia","Czech Republic","CZ",
+      "Denmark","DK","Estonia","EE","Finland","FI","France","FR","Germany","DE","Greece","GR","Hungary","HU",
+      "Iceland","IS","Ireland","IE","Italy","IT","Kosovo","XK","Latvia","LV","Liechtenstein","LI","Lithuania","LT",
+      "Luxembourg","LU","Malta","MT","Moldova","MD","Monaco","MC","Montenegro","ME","Netherlands","NL",
+      "North Macedonia","MK","Norway","NO","Poland","PL","Portugal","PT","Romania","RO","San Marino","SM",
+      "Serbia","RS","Slovakia","SK","Slovenia","SI","Spain","ES","Sweden","SE","Switzerland","CH","Ukraine","UA",
+      "Vatican City","VA"]
+
+# ----------------------------------------------------------------------------
+# METRICS  (base = stored & summable; derived = computed at query time)
+# format: number|currency|percent|ratio   cf: standard(higher=green)|reverse(higher=red)
+# ----------------------------------------------------------------------------
+metrics:
+
+  base:
+    # --- sales lane (Shopify: source of truth for orders/revenue) ---
+    orders:          {lane: sales, format: number,   cf: standard}
+    revenue:         {lane: sales, format: currency, cf: standard}
+    gross_sales:     {lane: sales, format: currency, cf: standard}
+    discounts:       {lane: sales, format: currency, cf: reverse}
+    cogs:            {lane: sales, format: currency, cf: reverse}
+    gross_profit:    {lane: sales, format: currency, cf: standard}
+    # --- traffic lane (GA4) ---
+    visits:          {lane: traffic, format: number, cf: standard}
+    engaged_visits:  {lane: traffic, format: number, cf: standard}
+    add_to_carts:    {lane: traffic, format: number, cf: standard}
+    checkouts:       {lane: traffic, format: number, cf: standard}
+    # --- platform lane (Meta + Google) ---
+    spend:                          {lane: platform, format: currency, cf: reverse}
+    impressions:                    {lane: platform, format: number,   cf: standard}
+    clicks:                         {lane: platform, format: number,   cf: standard}
+    link_clicks:                    {lane: platform, format: number,   cf: standard}
+    reach:                          {lane: platform, format: number,   cf: standard}
+    platform_conversions_1d:        {lane: platform, format: number,   cf: standard}
+    platform_conversions_7d:        {lane: platform, format: number,   cf: standard}
+    platform_conversions_28d:       {lane: platform, format: number,   cf: standard}
+    platform_conversion_value_1d:   {lane: platform, format: currency, cf: standard}
+    platform_conversion_value_7d:   {lane: platform, format: currency, cf: standard}
+    platform_conversion_value_28d:  {lane: platform, format: currency, cf: standard}
+
+  derived:
+    aov:                       {formula: "revenue / orders",              format: currency, cf: standard}
+    gross_margin_pct:          {formula: "gross_profit / revenue",        format: percent,  cf: standard, dp: 1}
+    discount_rate:             {formula: "discounts / gross_sales",       format: percent,  cf: reverse, dp: 1}
+    conversion_rate:           {formula: "orders / visits",               format: percent,  cf: standard, dp: 2}
+    engagement_rate:           {formula: "engaged_visits / visits",       format: percent,  cf: standard}
+    add_to_cart_rate:          {formula: "add_to_carts / visits",         format: percent,  cf: standard}
+    checkout_rate:             {formula: "checkouts / visits",            format: percent,  cf: standard}
+    checkout_completion_rate:  {formula: "orders / checkouts",            format: percent,  cf: standard}
+    cart_abandonment_rate:     {formula: "1 - orders / add_to_carts",     format: percent,  cf: reverse}
+    roas:                      {formula: "revenue / spend",               format: ratio,    cf: standard}
+    cost_per_order:            {formula: "spend / orders",                format: currency, cf: reverse}
+    cost_per_visit:            {formula: "spend / visits",                format: currency, cf: reverse}
+    platform_roas:             {formula: "platform_conversion_value_7d / spend", format: ratio, cf: standard}
+    ctr:                       {formula: "clicks / impressions",          format: percent,  cf: standard}
+    cpc:                       {formula: "spend / clicks",                format: currency, cf: reverse}
+    cpm:                       {formula: "1000 * spend / impressions",    format: currency, cf: reverse}
+
+# ----------------------------------------------------------------------------
+# DISPLAY NAMES — user-friendly labels for dimensions and metrics.
+# ----------------------------------------------------------------------------
+display:
+  date:                          "Date"
+  source:                        "Source"
+  marketing_channel_group:       "Channel Group"
+  marketing_channel:             "Marketing Channel"
+  marketing_campaign:            "Campaign"
+  paid_ad_platform:              "Ad Platform"
+  paid_campaign_type:            "Campaign Type"
+  geo_region:                    "Region"
+  geo_market:                    "Market"
+  geo_country:                   "Country"
+  device:                        "Device"
+  period_date:                   "Date"
+  period_week:                   "Week"
+  period_month:                  "Month"
+  period_quarter:                "Quarter"
+  period_year:                   "Year"
+  orders:                        "Orders"
+  revenue:                       "Revenue"
+  gross_sales:                   "Gross Sales"
+  discounts:                     "Discounts"
+  cogs:                          "COGS"
+  gross_profit:                  "Gross Profit"
+  visits:                        "Visits"
+  engaged_visits:                "Engaged Visits"
+  add_to_carts:                  "Add to Carts"
+  checkouts:                     "Checkouts"
+  spend:                         "Spend"
+  impressions:                   "Impressions"
+  clicks:                        "Clicks"
+  link_clicks:                   "Link Clicks"
+  reach:                         "Reach"
+  platform_conversions_1d:       "Platform Conversions (1d)"
+  platform_conversions_7d:       "Platform Conversions (7d)"
+  platform_conversions_28d:      "Platform Conversions (28d)"
+  platform_conversion_value_1d:  "Platform Conv. Value (1d)"
+  platform_conversion_value_7d:  "Platform Conv. Value (7d)"
+  platform_conversion_value_28d: "Platform Conv. Value (28d)"
+  aov:                           "AOV"
+  gross_margin_pct:              "Gross Margin"
+  discount_rate:                 "Discount Rate"
+  conversion_rate:               "Conversion Rate"
+  engagement_rate:               "Engagement Rate"
+  add_to_cart_rate:              "Add to Cart Rate"
+  checkout_rate:                 "Checkout Rate"
+  checkout_completion_rate:      "Checkout Completion Rate"
+  cart_abandonment_rate:         "Cart Abandonment Rate"
+  roas:                          "ROAS"
+  cost_per_order:                "Cost per Order"
+  cost_per_visit:                "Cost per Visit"
+  platform_roas:                 "Platform ROAS"
+  ctr:                           "CTR"
+  cpc:                           "CPC"
+  cpm:                           "CPM"
+
+# ----------------------------------------------------------------------------
+# TARGETS — columns the targets file may carry (matched to base/derived metrics).
+# ----------------------------------------------------------------------------
+targets:
+  column_map:
+    target_spend: spend
+    target_visits: visits
+    target_orders: orders
+    target_revenue: revenue
+    target_engaged_visits: engaged_visits
+    target_add_to_carts: add_to_carts
+    target_checkouts: checkouts

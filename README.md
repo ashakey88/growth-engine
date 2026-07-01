@@ -1,58 +1,86 @@
-# The Growth Engine — prototype
+# The Growth Engine
 
-A zero-cost, end-to-end ELT walking skeleton for the commercial intelligence
-platform. Same architecture as production, just smaller and free.
+A commercial intelligence platform for ecommerce brands. Multiple sources are
+pulled into parquet (local disk or Cloudflare R2), conformed into one "stacked
+fact" table, and reported on via a Streamlit app styled to Malleson Labs.
 
 ```
-Shopify (or mock data)  ->  Parquet (local disk / Cloudflare R2)  ->  DuckDB marts  ->  Streamlit
-        extract                       load                              transform        present
+Shopify (sales)  ─┐
+GA4 (traffic)     ─┤   extract → per-source parquet
+Meta / Google (ads)┘            │
+                                ▼
+                    build_fact.py + semantics.py  (definitions.yaml)
+                                │
+                         fact/fact.parquet  ── stacked conformed grain
+                                │
+                                ▼
+                    Streamlit app  (Overview · Breakdown · Trend · Explorer · Targets)
 ```
+
+## Core principle: one definitions file drives everything
+
+`definitions.yaml` holds every dimension rule and metric formula. `semantics.py`
+reads it; **both** the transform and the app import `semantics.py`, so the
+pipeline and the dashboard can never disagree. To change a channel rule, geo
+bucket, or metric formula, edit `definitions.yaml` only.
+
+## The stacked fact model
+
+One long table. Every source contributes rows tagged with `source`, filling only
+the metric columns in its lane; the rest are null. Derived metrics (AOV, ROAS,
+conversion rate, margin…) are computed at query time from the base sums.
+
+- **sales lane** — Shopify (source of truth for orders / revenue / margin)
+- **traffic lane** — GA4 (visits, engaged visits, add-to-carts, checkouts)
+- **platform lane** — Meta + Google (spend, impressions, clicks, conversions)
+
+Never sum a metric across sources that both report it without filtering `source`.
 
 ## Run it (no accounts, no cost)
 
 ```bash
-cd growth-engine
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env          # defaults to local storage + mock data
-python run_pipeline.py        # extract -> load -> transform
+python run_pipeline.py        # mock every source → build fact
 streamlit run app/streamlit_app.py
 ```
 
-With no credentials set, the pipeline generates ~120 days of realistic
-Shopify-shaped order data so every stage runs immediately.
+Mock data for all four sources is generated so every page is populated instantly.
 
-## Swap in real data
+## Deploy live (free)
 
-- **Shopify:** set `SHOPIFY_STORE` and `SHOPIFY_ACCESS_TOKEN` in `.env`
-  (a free Shopify partner dev store works perfectly). The pipeline switches
-  from mock to live automatically — nothing downstream changes.
-- **Cloudflare R2:** set `STORAGE_BACKEND=r2` plus the `R2_*` values, and
-  `pip install s3fs`. Parquet then lands in R2 and DuckDB reads it via httpfs.
+Streamlit Community Cloud: repo `ashakey88/growth-engine`, branch `main`, main
+file `app/streamlit_app.py`. It self-bootstraps with mock data on first load.
+
+## Real data
+
+- **Shopify** — the app's **Connect sources** screen; paste a store domain +
+  Admin API token and it pulls real orders and rebuilds the fact table.
+- **Cloudflare R2** — set `STORAGE_BACKEND=r2` + the `R2_*` values (secrets on
+  Streamlit Cloud). Parquet then lives in R2 instead of local disk.
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `config.py` | Env-driven configuration |
-| `ingest/mock_source.py` | Synthetic Shopify-shaped data (zero cost) |
+| `definitions.yaml` | Single source of truth: dimensions + metrics |
+| `semantics.py` | Reads definitions; dimension derivation + metric compute/format |
+| `ingest/storage.py` | Parquet + JSON store, local or R2 |
+| `ingest/mock_source.py` | Per-source mock data (matches real schemas) |
 | `ingest/shopify.py` | Real Shopify Admin API extractor |
-| `ingest/storage.py` | Parquet writer — local or R2, date-partitioned |
-| `transform/build_models.py` | DuckDB: raw → fct_orders → marts |
-| `app/streamlit_app.py` | Dashboard reading the marts |
-| `run_pipeline.py` | Runs the full ELT |
+| `transform/build_fact.py` | Maps each source to the conformed grain → `fact.parquet` |
+| `analytics.py` | The app's data brain (filter, aggregate, KPIs) — no Streamlit |
+| `app/streamlit_app.py` | UI: Overview, Breakdown, Trend, Explorer, Connect, Targets |
+| `run_pipeline.py` | Runs the full ELT (mock or real Shopify) |
 
-## Connect your sources
+## What's not here yet
 
-The app has a **Connect sources** screen (sidebar). Shopify is a working
-connection — paste a store domain + Admin API token and it pulls real orders
-and rebuilds the dashboard. The other platforms are placeholder tiles for now.
-
-## What's deliberately not here yet
-
-- Real connections for Meta, Google, TikTok, Microsoft, Klaviyo, GSC (only the
-  tiles exist — Shopify is the one wired up).
+- Real extractors for GA4 / Meta / Google / TikTok / Microsoft (source pull
+  scripts exist as a reference pattern; only Shopify is wired into the app).
+- GA4→Shopify reconciliation for channel-split revenue (Shopify owns revenue by
+  geo today; channel splits come from GA4 traffic + ad spend).
 - Multi-tenancy / per-client auth and secure credential storage.
-- The AI commercial analyst (text-to-SQL over the DuckDB schema).
-- Orchestration (a daily scheduled run).
+- The AI commercial analyst.
+- Orchestration (scheduled daily refresh via GitHub Actions).

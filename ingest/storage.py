@@ -1,71 +1,96 @@
-"""Storage layer: writes raw Parquet either to local disk or Cloudflare R2.
+"""Storage layer — one parquet per key, on local disk or Cloudflare R2.
 
-Layout (Hive-partitioned so DuckDB only scans what it needs):
-    <root>/<client_id>/<source>/<dataset>/dt=YYYY-MM-DD/data.parquet
+The same keys (e.g. "shopify/shopify_data.parquet", "fact/fact.parquet") work
+against either backend, so nothing else in the codebase cares where data lives.
+R2 credentials are read from env vars (works in GitHub Actions and on Streamlit
+Cloud, which injects secrets as env vars).
 """
 from __future__ import annotations
 
-import shutil
+import json
+from pathlib import Path
 
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 import config
 
 
-def _local_root() -> str:
-    return str(config.RAW_DIR)
+# ── R2 (S3-compatible) client, created lazily ────────────────────
+def _r2():
+    import boto3
 
-
-def _r2_filesystem():
-    """Return an fsspec S3 filesystem pointed at Cloudflare R2."""
-    import s3fs  # imported lazily so local runs need no extra deps
-
-    return s3fs.S3FileSystem(
-        key=config.R2_ACCESS_KEY_ID,
-        secret=config.R2_SECRET_ACCESS_KEY,
-        client_kwargs={"endpoint_url": config.R2_ENDPOINT},
+    endpoint = config.R2_ENDPOINT or (
+        f"https://{config.R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+    )
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=config.R2_ACCESS_KEY_ID,
+        aws_secret_access_key=config.R2_SECRET_ACCESS_KEY,
+        region_name="auto",
     )
 
 
-def dataset_path(source: str, dataset: str) -> str:
-    """Base path for a dataset, without the date partitions."""
-    rel = f"{config.CLIENT_ID}/{source}/{dataset}"
-    if config.STORAGE_BACKEND == "r2":
-        return f"{config.R2_BUCKET}/{rel}"
-    return f"{_local_root()}/{rel}"
+def _local_path(key: str) -> Path:
+    p = config.DATA_DIR / key
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
 
 
-def write_dataframe(df: pd.DataFrame, source: str, dataset: str, date_col: str) -> str:
-    """Write a dataframe as date-partitioned Parquet. Returns the dataset path."""
-    if df.empty:
-        raise ValueError(f"Refusing to write empty dataset {source}/{dataset}")
+def _use_r2() -> bool:
+    return config.STORAGE_BACKEND == "r2"
 
-    df = df.copy()
-    df["dt"] = pd.to_datetime(df[date_col]).dt.strftime("%Y-%m-%d")
-    table = pa.Table.from_pandas(df, preserve_index=False)
-    base = dataset_path(source, dataset)
 
-    if config.STORAGE_BACKEND == "r2":
-        pq.write_to_dataset(
-            table, root_path=base, partition_cols=["dt"],
-            filesystem=_r2_filesystem(), existing_data_behavior="delete_matching",
-        )
+# ── Parquet ──────────────────────────────────────────────────────
+def write_df(df: pd.DataFrame, key: str) -> None:
+    if _use_r2():
+        local = _local_path(key)
+        df.to_parquet(local, index=False)
+        _r2().upload_file(str(local), config.R2_BUCKET, key)
     else:
-        # Clean previous run so the prototype is idempotent.
-        shutil.rmtree(base, ignore_errors=True)
-        pq.write_to_dataset(
-            table, root_path=base, partition_cols=["dt"],
-            existing_data_behavior="delete_matching",
-        )
-
-    return base
+        df.to_parquet(_local_path(key), index=False)
 
 
-def read_glob(source: str, dataset: str) -> str:
-    """Glob pattern DuckDB uses to read every partition of a dataset."""
-    base = dataset_path(source, dataset)
-    if config.STORAGE_BACKEND == "r2":
-        return f"s3://{base}/*/*.parquet"
-    return f"{base}/*/*.parquet"
+def read_df(key: str) -> pd.DataFrame | None:
+    """Return the dataframe at `key`, or None if it doesn't exist."""
+    if _use_r2():
+        local = _local_path(key)
+        try:
+            _r2().download_file(config.R2_BUCKET, key, str(local))
+        except Exception:
+            return None
+        return pd.read_parquet(local)
+    p = _local_path(key)
+    return pd.read_parquet(p) if p.exists() else None
+
+
+def exists(key: str) -> bool:
+    if _use_r2():
+        try:
+            _r2().head_object(Bucket=config.R2_BUCKET, Key=key)
+            return True
+        except Exception:
+            return False
+    return _local_path(key).exists()
+
+
+# ── Small JSON (connection state) ────────────────────────────────
+def write_json(obj: dict, key: str) -> None:
+    if _use_r2():
+        local = _local_path(key)
+        local.write_text(json.dumps(obj))
+        _r2().upload_file(str(local), config.R2_BUCKET, key)
+    else:
+        _local_path(key).write_text(json.dumps(obj))
+
+
+def read_json(key: str) -> dict | None:
+    if _use_r2():
+        local = _local_path(key)
+        try:
+            _r2().download_file(config.R2_BUCKET, key, str(local))
+        except Exception:
+            return None
+        return json.loads(local.read_text())
+    p = _local_path(key)
+    return json.loads(p.read_text()) if p.exists() else None
