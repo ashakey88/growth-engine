@@ -17,7 +17,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config  # noqa: E402
 import semantics as sem  # noqa: E402
 from ingest import storage  # noqa: E402

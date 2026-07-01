@@ -1,18 +1,23 @@
 """The Growth Engine — Streamlit app (Malleson Labs styling).
 
-Report format modelled on the eCommerce reporting brief: Exec Summary (grouped
-KPI cards with vs-LY / vs-target + 8-week sparkline), KPI Overview (KPI x period
-table), KPI Trends (TY vs LY), Channels / Regions / Devices comparison tables,
-Data Explorer, plus Connect sources and Targets. All metric logic lives in
+Two parts, mirroring the eCommerce app:
+  • Report     — KPI report with period + comparison: Summary cards, Trends,
+                 Channels / Regions / Devices sections.
+  • Data Table — a simplified flexible table (any dimensions x metrics + export).
+Plus Connect sources and Targets utilities. All metric logic lives in
 semantics.py / analytics.py.
 """
+import os
 import sys
-from pathlib import Path
 
-import pandas as pd
-import streamlit as st
+# Local modules must win over any same-named site-packages ("analytics",
+# "semantics"), so insert the project root at the FRONT of sys.path.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
 
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+import pandas as pd  # noqa: E402
+import streamlit as st  # noqa: E402
+
 import analytics  # noqa: E402
 import config  # noqa: E402
 import run_pipeline  # noqa: E402
@@ -35,9 +40,8 @@ h1 { font-size:2.1rem !important; }
 .ml-eyebrow { font-size:11px; font-weight:700; letter-spacing:0.14em; text-transform:uppercase; color:#2563EB; }
 .kpi-card { background:#fff; border:1px solid #E4E8EF; border-radius:12px; padding:16px 18px; box-shadow:0 1px 2px rgba(17,24,39,0.04); margin-bottom:6px; }
 .kpi-name { font-size:12px; color:#64748B; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; }
-.kpi-value { font-family:'DM Serif Display',serif; font-size:30px; color:#111827; line-height:1.1; margin:4px 0 6px; }
+.kpi-value { font-family:'DM Serif Display',serif; font-size:28px; color:#111827; line-height:1.1; margin:4px 0 6px; }
 .kpi-delta { font-size:12px; font-weight:600; display:inline-block; margin-right:12px; }
-.kpi-sub { font-size:11px; color:#94A3B8; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -48,7 +52,7 @@ KPI_GROUPS = {
     "Paid Funnel": ["spend", "roas", "cost_per_visit", "cost_per_add_to_cart",
                     "cost_per_checkout", "cost_per_order"],
 }
-ALL_KPIS = [m for group in KPI_GROUPS.values() for m in group]
+ALL_KPIS = [m for g in KPI_GROUPS.values() for m in g]
 
 
 @st.cache_resource(show_spinner="Setting up demo data…")
@@ -95,9 +99,8 @@ with st.sidebar:
     st.markdown('<div class="ml-eyebrow">Malleson Labs</div>'
                 '<div class="ml-brand">The Growth Engine</div>', unsafe_allow_html=True)
     st.markdown("---")
-    page = st.radio("Navigate", ["Exec Summary", "KPI Overview", "KPI Trends",
-                                 "Channels", "Regions", "Devices", "Data Explorer",
-                                 "Connect sources", "Targets"], label_visibility="collapsed")
+    page = st.radio("Navigate", ["Report", "Data Table", "Connect sources", "Targets"],
+                    label_visibility="collapsed")
 
 fact = get_fact()
 if fact is None or fact.empty:
@@ -105,12 +108,10 @@ if fact is None or fact.empty:
     st.stop()
 
 ref = fact["date"].max().date()
-REPORT_PAGES = {"Exec Summary", "KPI Overview", "KPI Trends", "Channels", "Regions",
-                "Devices", "Data Explorer"}
 FILTER_DIMS = ["marketing_channel_group", "marketing_channel", "paid_ad_platform",
                "geo_region", "geo_market", "device"]
 
-if page in REPORT_PAGES:
+if page in ("Report", "Data Table"):
     with st.sidebar:
         st.markdown("**Period**")
         period = st.selectbox("Period", analytics.PERIODS,
@@ -131,14 +132,10 @@ if page in REPORT_PAGES:
     targets = get_targets()
 
 
-# ── Exec Summary ─────────────────────────────────────────────────
-def page_exec():
-    st.title("Executive Summary")
-    st.caption(f"{period} · {cur[0]} → {cur[1]}  ·  {comparison.lower()}"
-               + ("" if conn_state()["active_source"] == "shopify"
-                  else "  ·  demo data"))
+# ── Report sections ──────────────────────────────────────────────
+def render_summary():
     for group, metrics in KPI_GROUPS.items():
-        st.subheader(group)
+        st.markdown(f"#### {group}")
         rows = analytics.kpi_rows(fact, metrics, cur, cmp, targets, filters)
         cols = st.columns(min(len(metrics), 5))
         for i, row in enumerate(rows):
@@ -154,89 +151,72 @@ def _kpi_card(row):
         f'<div class="kpi-card"><div class="kpi-name">{sem.nice(m)}</div>'
         f'<div class="kpi-value">{sem.fmt(m, row["value"])}</div>'
         f'<span class="kpi-delta" style="color:{dcol}">{fmt_pct(row["delta_pct"])} {cmp_label}</span>'
-        f'<span class="kpi-delta" style="color:{tcol}">{fmt_pct(row["vtarg_pct"])} Targ</span>'
-        f'<div class="kpi-sub">8-week trend</div></div>', unsafe_allow_html=True)
+        f'<span class="kpi-delta" style="color:{tcol}">{fmt_pct(row["vtarg_pct"])} Targ</span></div>',
+        unsafe_allow_html=True)
     spark = analytics.sparkline(fact, m, cur[1], 8, filters)
     if not spark.empty:
-        st.line_chart(spark.set_index("period"), y=m, height=90)
+        st.line_chart(spark.set_index("period"), y=m, height=80)
 
 
-# ── KPI Overview (KPI x period table) ────────────────────────────
-def page_kpi_overview():
-    st.title("KPI Overview")
-    st.caption(f"Values as of {ref} · % vs {cmp_label}")
-    periods = ["Week to Date", "Month to Date", "Quarter to Date", "Year to Date"]
-    records = []
-    for group, metrics in KPI_GROUPS.items():
-        for m in metrics:
-            rec = {"Group": group, "KPI": sem.nice(m)}
-            for pname in periods:
-                c = analytics.resolve_period(pname, ref)
-                cm = analytics.ly_range(*c) if comparison == "vs Last Year" else analytics.prior_period(*c)
-                r = analytics.kpi_rows(fact, [m], c, cm, targets, filters)[0]
-                rec[pname] = sem.fmt(m, r["value"])
-                rec[f"{pname} %"] = fmt_pct(r["delta_pct"])
-            records.append(rec)
-    df = pd.DataFrame(records)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-
-
-# ── KPI Trends (TY vs LY) ────────────────────────────────────────
-def page_trends():
-    st.title("KPI Trends")
+def render_trends():
     c1, c2 = st.columns(2)
-    metric = c1.selectbox("Metric", ALL_KPIS, index=ALL_KPIS.index("revenue"), format_func=sem.nice)
-    freq = c2.selectbox("Frequency", ["Weekly", "Daily", "Monthly"])
+    metric = c1.selectbox("Metric", ALL_KPIS, index=ALL_KPIS.index("revenue"),
+                          format_func=sem.nice, key="tr_metric")
+    freq = c2.selectbox("Frequency", ["Weekly", "Daily", "Monthly"], key="tr_freq")
     fmap = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
     cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
     ly = analytics.ly_range(*cur)
     ly_df = analytics.apply_filters(fact, ly[0], ly[1], filters)
     ty = analytics.trend(cur_df, metric, fmap[freq]).reset_index(drop=True)
     lyt = analytics.trend(ly_df, metric, fmap[freq]).reset_index(drop=True)
-    chart = pd.DataFrame({"TY": ty[metric]})
-    if not lyt.empty:
-        chart["LY"] = lyt[metric].reindex(range(len(ty))).values if len(lyt) >= len(ty) \
-            else list(lyt[metric].values) + [None] * (len(ty) - len(lyt))
-    st.subheader(f"{sem.nice(metric)} — {period} ({freq.lower()})")
-    st.line_chart(chart, height=360)
+    chart = pd.DataFrame({"TY": ty[metric]}) if not ty.empty else pd.DataFrame({"TY": []})
+    if not lyt.empty and not ty.empty:
+        vals = list(lyt[metric].values)[:len(ty)]
+        vals += [None] * (len(ty) - len(vals))
+        chart["LY"] = vals
+    st.markdown(f"**{sem.nice(metric)} — {period} ({freq.lower()}), TY vs LY**")
+    st.line_chart(chart, height=340)
 
 
-# ── Dimension comparison tables (Channels / Regions / Devices) ───
-def _comparison_page(title, dimension, metrics):
-    st.title(title)
-    st.caption(f"{period} · {cur[0]} → {cur[1]}  vs {cmp_label} ({cmp[0]} → {cmp[1]})")
+def _comparison_section(dimension, metrics):
     tbl = analytics.comparison_table(fact, dimension, metrics, cur, cmp, filters)
     disp = pd.DataFrame({sem.nice(dimension): tbl[dimension]})
     for m in metrics:
         disp[sem.nice(m)] = tbl[m].map(lambda v, mm=m: sem.fmt(mm, v))
-        disp[f"{sem.nice(m)} vs {cmp_label}"] = tbl[f"{m}__vs%"].map(fmt_pct)
+        disp[f"vs {cmp_label}"] = tbl[f"{m}__vs%"].map(fmt_pct)
+    st.caption(f"{cur[0]} → {cur[1]}  vs {cmp_label} ({cmp[0]} → {cmp[1]})")
     st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
-def page_channels():
-    _comparison_page("Channels", "marketing_channel",
-                     ["revenue", "visits", "orders", "conversion_rate", "aov", "spend", "roas"])
+BIZ = ["revenue", "visits", "orders", "conversion_rate", "aov", "spend", "roas"]
 
 
-def page_regions():
-    _comparison_page("Regions", "geo_market",
-                     ["revenue", "visits", "orders", "conversion_rate", "aov", "spend", "roas"])
+def page_report():
+    st.title("Report")
+    st.caption(f"{period} · {cur[0]} → {cur[1]}  ·  {comparison.lower()}"
+               + ("" if conn_state()["active_source"] == "shopify" else "  ·  demo data"))
+    tabs = st.tabs(["Summary", "Trends", "Channels", "Regions", "Devices"])
+    with tabs[0]:
+        render_summary()
+    with tabs[1]:
+        render_trends()
+    with tabs[2]:
+        _comparison_section("marketing_channel", BIZ)
+    with tabs[3]:
+        _comparison_section("geo_market", BIZ)
+    with tabs[4]:
+        _comparison_section("device", ["revenue", "visits", "orders", "conversion_rate", "aov"])
 
 
-def page_devices():
-    _comparison_page("Devices", "device",
-                     ["revenue", "visits", "orders", "conversion_rate", "aov"])
-
-
-# ── Data Explorer ────────────────────────────────────────────────
-def page_explorer():
-    st.title("Data Explorer")
+# ── Data Table (simplified explorer) ─────────────────────────────
+def page_data_table():
+    st.title("Data Table")
     st.caption(f"{period} · {cur[0]} → {cur[1]}")
     view = analytics.apply_filters(fact, cur[0], cur[1], filters)
-    dims = ["date", "source", "marketing_channel", "geo_region", "geo_market",
-            "paid_ad_platform", "device"]
+    dims = ["date", "source", "marketing_channel_group", "marketing_channel",
+            "paid_ad_platform", "geo_region", "geo_market", "device"]
     c1, c2 = st.columns(2)
-    gdims = c1.multiselect("Group by", dims, default=["marketing_channel"], format_func=sem.nice)
+    gdims = c1.multiselect("Dimensions", dims, default=["marketing_channel"], format_func=sem.nice)
     metrics = c2.multiselect("Metrics", sem.ALL_METRICS,
                              default=["revenue", "orders", "spend", "roas"], format_func=sem.nice)
     if not gdims or not metrics:
@@ -321,7 +301,7 @@ def _shopify_form(conn):
 # ── Targets ──────────────────────────────────────────────────────
 def page_targets():
     st.title("Targets")
-    st.caption("Upload daily eCommerce targets. Reports compare actuals against these.")
+    st.caption("Upload daily eCommerce targets. The Report compares actuals against these.")
     cur_t = get_targets()
     if cur_t is not None:
         st.write(f"Current targets: **{len(cur_t)} rows**, "
@@ -339,13 +319,10 @@ def page_targets():
             st.rerun()
 
 
-PAGES = {
-    "Exec Summary": page_exec, "KPI Overview": page_kpi_overview, "KPI Trends": page_trends,
-    "Channels": page_channels, "Regions": page_regions, "Devices": page_devices,
-    "Data Explorer": page_explorer, "Connect sources": page_connect, "Targets": page_targets,
-}
+PAGES = {"Report": page_report, "Data Table": page_data_table,
+         "Connect sources": page_connect, "Targets": page_targets}
 try:
     PAGES[page]()
 except Exception as e:
-    st.error(f"Something went wrong rendering this page: {e}")
+    st.error("Something went wrong rendering this page.")
     st.exception(e)

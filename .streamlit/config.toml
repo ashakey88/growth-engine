@@ -7,5 +7,5 @@ secondaryBackgroundColor = "#F7F8FA"
 textColor = "#111827"
 font = "sans serif"
 
-[server]
-showErrorDetails = true
+[client]
+showErrorDetails = "full"
