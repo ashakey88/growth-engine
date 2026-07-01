@@ -7,6 +7,7 @@ Two parts, mirroring the eCommerce app:
 Plus Connect sources and Targets utilities. All metric logic lives in
 semantics.py / analytics.py.
 """
+import calendar
 import os
 import sys
 
@@ -16,6 +17,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 import altair as alt  # noqa: E402
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
@@ -96,7 +98,8 @@ SECTIONS = {
     "Utility": ["Data Table", "Connect sources", "Targets"],
 }
 PERIOD_PAGES = {"eCommerce", "Profitability", "Customers", "Product", "Acquisition",
-                "Forecast", "Order Insight", "Benchmarks", "Data Table"}
+                "Forecast", "Order Insight", "Benchmarks", "Data Table",
+                "Exec Digest", "AI Analyst"}
 
 
 @st.cache_resource(show_spinner="Setting up demo data…")
@@ -120,13 +123,76 @@ def get_targets():
     return analytics.load_targets()
 
 
+@st.cache_resource
+def get_product_fact():
+    return analytics.load_product_fact()
+
+
+@st.cache_resource
+def get_email_fact():
+    return analytics.load_email_fact()
+
+
+@st.cache_resource
+def get_seo_fact():
+    return analytics.load_seo_fact()
+
+
+@st.cache_resource
+def get_orders():
+    return analytics._load_dated(config.SHOPIFY_KEY)
+
+
+@st.cache_resource
+def get_line_items():
+    df = storage.read_df(config.SHOPIFY_LINEITEMS_KEY)
+    if df is not None:
+        df["created_at"] = pd.to_datetime(df["created_at"])
+    return df
+
+
+@st.cache_resource
+def get_returns():
+    return analytics._load_dated(config.SHOPIFY_RETURNS_KEY)
+
+
 def conn_state() -> dict:
     return storage.read_json(config.CONNECTIONS_KEY) or {"active_source": "mock", "shopify_store": None}
 
 
 def reset_caches():
-    get_fact.clear()
-    _bootstrap.clear()
+    for fn in (get_fact, get_product_fact, get_email_fact, get_seo_fact,
+               get_orders, get_line_items, get_returns, _bootstrap):
+        fn.clear()
+
+
+# ── Plain formatters for domain tables (outside the marketing definitions) ──
+def money(v):
+    return "—" if v is None or v != v else f"£{v:,.0f}"
+
+
+def num(v):
+    return "—" if v is None or v != v else f"{v:,.0f}"
+
+
+def pctv(v, dp=1):
+    return "—" if v is None or v != v else f"{v * 100:.{dp}f}%"
+
+
+def ratio(v):
+    return "—" if v is None or v != v else f"{v:.2f}"
+
+
+def metrics_row(items):
+    """items: list of (label, value_str, help_or_None)."""
+    cols = st.columns(len(items))
+    for c, it in zip(cols, items):
+        c.metric(it[0], it[1], help=it[2] if len(it) > 2 else None)
+
+
+def _in_period(df, col="date"):
+    m = (df[col] >= pd.Timestamp(cur[0])) & (df[col] <= pd.Timestamp(cur[1]))
+    return df[m]
 
 
 ICONS = {
@@ -574,80 +640,359 @@ def _stub(title, purpose, sections, needs=None, tier="Report"):
         st.warning(f"🔌 Unlocks when connected: {needs}")
 
 
+def _report_top(title, icon):
+    st.markdown(f'<div class="ml-eyebrow">{icon} Report</div>', unsafe_allow_html=True)
+    st.title(title)
+    chips([(f"📅 {period}", "accent"), (comparison, ""), (f"Data through {ref}", "")])
+
+
+# ── Customers & Retention ────────────────────────────────────────
 def page_customers():
-    _stub("Customers & Retention",
-          "Are your customers worth more than they cost? Where profit compounds.",
-          ["LTV, LTV:CAC ratio and payback period",
-           "New vs returning revenue split",
-           "Cohort retention curves + repeat rate",
-           "Email / CRM section (flows, campaigns, revenue per recipient)"],
-          "Shopify customer history (have it) · Klaviyo for the Email/CRM section")
+    _report_top("Customers & Retention", "👥")
+    orders = get_orders()
+    if orders is None or orders.empty:
+        _empty("No order data.")
+        return
+    o = orders.copy()
+    o["date"] = pd.to_datetime(o["created_at"]) if "created_at" in o else o["date"]
+    o = o.sort_values("date")
+    o["first_order"] = o.groupby("customer_id")["date"].transform("min")
+    p = o[(o["date"] >= pd.Timestamp(cur[0])) & (o["date"] <= pd.Timestamp(cur[1]))]
+    if p.empty:
+        _empty()
+        return
+    custs = p["customer_id"].nunique()
+    is_new = p["first_order"].between(pd.Timestamp(cur[0]), pd.Timestamp(cur[1]))
+    new = p.loc[is_new, "customer_id"].nunique()
+    orders_ct, revenue = len(p), p["net_sales"].sum()
+    ltv = o.groupby("customer_id")["net_sales"].sum().mean()
+    spend = analytics.totals(analytics.apply_filters(fact, cur[0], cur[1], filters), ["spend"])["spend"]
+    cac = spend / new if new else None
+    metrics_row([
+        ("Customers", num(custs), "Distinct customers who ordered this period"),
+        ("New customers", num(new), "First-ever order fell in this period"),
+        ("Repeat rate", pctv((custs - new) / custs if custs else 0), "Returning ÷ all customers"),
+        ("Orders / customer", ratio(orders_ct / custs if custs else 0), None),
+    ])
+    metrics_row([
+        ("AOV", money(revenue / orders_ct if orders_ct else 0), None),
+        ("Avg LTV", money(ltv), "Average lifetime net revenue per customer"),
+        ("Blended CAC", money(cac), "Marketing spend ÷ new customers"),
+        ("LTV : CAC", ratio(ltv / cac) if cac else "—", "Above 3 is healthy"),
+    ])
+    t1, t2, t3 = st.tabs(["New vs returning", "Cohort retention", "Email / CRM"])
+    with t1:
+        pv = p.copy()
+        pv["cohort"] = np.where(is_new.values, "new", "returning")
+        pv["week"] = pv["date"].dt.to_period("W").dt.start_time
+        piv = pv.groupby(["week", "cohort"])["net_sales"].sum().unstack(fill_value=0)
+        st.area_chart(piv, height=300)
+    with t2:
+        oo = o.copy()
+        oo["cm"] = oo["first_order"].dt.to_period("M")
+        oo["om"] = oo["date"].dt.to_period("M")
+        oo["ms"] = (oo["om"].dt.year - oo["cm"].dt.year) * 12 + (oo["om"].dt.month - oo["cm"].dt.month)
+        size = oo.groupby("cm")["customer_id"].nunique()
+        ret = oo.groupby(["cm", "ms"])["customer_id"].nunique().reset_index()
+        ret["pct"] = ret.apply(lambda r: r["customer_id"] / size[r["cm"]], axis=1)
+        mat = ret.pivot(index="cm", columns="ms", values="pct").tail(12)
+        mat.index = mat.index.astype(str)
+        st.caption("Share of each monthly cohort still ordering, N months later.")
+        st.dataframe((mat * 100).round(0).fillna(""), use_container_width=True)
+    with t3:
+        em = get_email_fact()
+        if em is None or em.empty:
+            st.info("🔌 Connect Klaviyo to light up the Email / CRM section.")
+        else:
+            e = _in_period(em)
+            g = e.groupby(["type", "name"]).agg(recipients=("recipients", "sum"),
+                orders=("orders", "sum"), revenue=("revenue", "sum")).reset_index()
+            g["rev / recipient"] = g["revenue"] / g["recipients"]
+            metrics_row([("Email revenue", money(g["revenue"].sum()), None),
+                         ("Email orders", num(g["orders"].sum()), None),
+                         ("Rev / recipient", money(g["revenue"].sum() / g["recipients"].sum()
+                          if g["recipients"].sum() else 0), None)])
+            disp = g.sort_values("revenue", ascending=False)
+            disp["revenue"] = disp["revenue"].map(money)
+            disp["rev / recipient"] = disp["rev / recipient"].map(lambda v: f"£{v:,.2f}")
+            disp["recipients"] = disp["recipients"].map(num)
+            disp["orders"] = disp["orders"].map(num)
+            st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
+# ── Product / Merchandising ──────────────────────────────────────
 def page_product():
-    _stub("Product / Merchandising",
-          "What's really driving your margin? Everything, per product.",
-          ["Sales & margin by product / category (discount depth per SKU)",
-           "Product funnel: views → add-to-cart rate → checkout → conversion",
-           "Stock & availability: sell-through, days of cover, lost sales from OOS",
-           "Returns: rate, reasons and margin impact by product"],
-          "GA4 item-level events · Shopify inventory · Shopify returns/refunds")
+    _report_top("Product / Merchandising", "📦")
+    fp = get_product_fact()
+    if fp is None or fp.empty:
+        _empty("No product data.")
+        return
+    p = _in_period(fp)
+    if p.empty:
+        _empty()
+        return
+    for c in ["product_views", "product_add_to_carts", "on_hand", "returned_units", "refund_amount"]:
+        if c not in p:
+            p[c] = 0
+    agg = p.groupby(["product_id", "product_title", "category"]).agg(
+        units=("units", "sum"), revenue=("revenue", "sum"), gross_sales=("gross_sales", "sum"),
+        discounts=("discounts", "sum"), gross_profit=("gross_profit", "sum"),
+        views=("product_views", "sum"), atc=("product_add_to_carts", "sum"),
+        on_hand=("on_hand", "last"), returned=("returned_units", "sum"),
+    ).reset_index().fillna(0)
+    days = max(1, (cur[1] - cur[0]).days + 1)
+
+    t1, t2, t3, t4 = st.tabs(["Sales & Margin", "Funnel", "Stock", "Returns"])
+    with t1:
+        cat = agg.groupby("category").agg(revenue=("revenue", "sum"),
+            gross_profit=("gross_profit", "sum"), units=("units", "sum")).reset_index()
+        cat["margin"] = cat["gross_profit"] / cat["revenue"]
+        st.bar_chart(cat.set_index("category"), y="revenue", height=260)
+        top = agg.sort_values("revenue", ascending=False).head(15).copy()
+        top["margin"] = (top["gross_profit"] / top["revenue"] * 100).round(1)
+        top["discount depth"] = (top["discounts"] / top["gross_sales"] * 100).round(1)
+        show = top[["product_title", "category", "units", "revenue", "gross_profit", "margin", "discount depth"]]
+        show.columns = ["Product", "Category", "Units", "Revenue", "Gross Profit", "Margin %", "Disc %"]
+        show["Revenue"] = show["Revenue"].map(money)
+        show["Gross Profit"] = show["Gross Profit"].map(money)
+        show["Units"] = show["Units"].map(num)
+        st.dataframe(show, use_container_width=True, hide_index=True)
+    with t2:
+        f = agg.copy()
+        f["atc_rate"] = (f["atc"] / f["views"] * 100).round(1)
+        f["cvr"] = (f["units"] / f["views"] * 100).round(1)
+        f = f.sort_values("views", ascending=False).head(20)
+        show = f[["product_title", "views", "atc", "atc_rate", "units", "cvr"]]
+        show.columns = ["Product", "Views", "Add to Carts", "ATC %", "Units Sold", "CVR %"]
+        for col in ["Views", "Add to Carts", "Units Sold"]:
+            show[col] = show[col].map(num)
+        st.dataframe(show, use_container_width=True, hide_index=True)
+    with t3:
+        s = agg.copy()
+        s["per_day"] = s["units"] / days
+        s["days_cover"] = (s["on_hand"] / s["per_day"].replace(0, np.nan)).round(0)
+        low = s[s["days_cover"] <= 21].sort_values("days_cover")
+        st.caption("Products with ≤ 21 days of cover at the current sell-through rate.")
+        show = low[["product_title", "category", "on_hand", "days_cover"]].head(20)
+        show.columns = ["Product", "Category", "On hand", "Days cover"]
+        show["On hand"] = show["On hand"].map(num)
+        st.dataframe(show, use_container_width=True, hide_index=True)
+        if low.empty:
+            st.success("No products low on stock. 🎉")
+    with t4:
+        r = agg.copy()
+        r["return_rate"] = (r["returned"] / r["units"].replace(0, np.nan) * 100).round(1)
+        worst = r.sort_values("return_rate", ascending=False).head(15)
+        show = worst[["product_title", "category", "units", "returned", "return_rate"]]
+        show.columns = ["Product", "Category", "Units", "Returned", "Return %"]
+        show["Units"] = show["Units"].map(num)
+        show["Returned"] = show["Returned"].map(num)
+        st.dataframe(show, use_container_width=True, hide_index=True)
+        rets = get_returns()
+        if rets is not None and not rets.empty:
+            rr = _in_period(rets)
+            if not rr.empty:
+                reasons = rr.groupby("reason").size().sort_values(ascending=False)
+                st.markdown("**Return reasons**")
+                st.bar_chart(reasons, height=240)
 
 
+# ── Acquisition / Paid Media ─────────────────────────────────────
 def page_acquisition():
-    _stub("Acquisition / Paid Media",
-          "Where should your next £ of spend go?",
-          ["CAC and new-customer ROAS by channel / campaign",
-           "Payback period and marginal efficiency",
-           "Channel truth: platform-reported vs actual (reconciliation)",
-           "SEO section: organic performance by landing page / query"],
-          "Search Console for the SEO section")
+    _report_top("Acquisition / Paid Media", "📣")
+    cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    total_rev = analytics.totals(cur_df, ["revenue"])["revenue"]
+    paid = cur_df[cur_df["paid_ad_platform"] != sem.NA]
+    if paid.empty:
+        _empty("No paid media data.")
+        return
+    spend = paid["spend"].sum()
+    metrics_row([
+        ("Total spend", money(spend), None),
+        ("Blended MER", ratio(total_rev / spend) if spend else "—", "Total revenue ÷ total ad spend"),
+        ("Blended CAC", money(spend / analytics.totals(cur_df, ["orders"])["orders"]
+         if analytics.totals(cur_df, ["orders"])["orders"] else 0), "Spend ÷ orders"),
+        ("Platform ROAS", ratio(paid["platform_conversion_value_7d"].sum() / spend) if spend else "—",
+         "Platform-reported value ÷ spend"),
+    ])
+    t1, t2 = st.tabs(["By platform", "SEO"])
+    with t1:
+        g = paid.groupby("paid_ad_platform").agg(spend=("spend", "sum"),
+            impressions=("impressions", "sum"), clicks=("clicks", "sum"),
+            conv=("platform_conversions_7d", "sum"),
+            conv_val=("platform_conversion_value_7d", "sum")).reset_index()
+        g["ROAS"] = (g["conv_val"] / g["spend"]).round(2)
+        g["CTR %"] = (g["clicks"] / g["impressions"] * 100).round(2)
+        g["CPC"] = (g["spend"] / g["clicks"]).round(2)
+        g["CPA"] = (g["spend"] / g["conv"].replace(0, np.nan)).round(2)
+        st.bar_chart(g.set_index("paid_ad_platform"), y="spend", height=260)
+        show = g[["paid_ad_platform", "spend", "conv", "ROAS", "CTR %", "CPC", "CPA"]].copy()
+        show.columns = ["Platform", "Spend", "Conversions", "ROAS", "CTR %", "CPC", "CPA"]
+        show["Spend"] = show["Spend"].map(money)
+        show["Conversions"] = show["Conversions"].map(num)
+        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.caption("Channel truth: these are *platform-reported* conversions (Meta/Google over-report). "
+                   "True channel-level revenue needs GA4→sales reconciliation — a next step.")
+    with t2:
+        seo = get_seo_fact()
+        if seo is None or seo.empty:
+            st.info("🔌 Connect Search Console to light up SEO.")
+        else:
+            s = _in_period(seo)
+            metrics_row([("Clicks", num(s["clicks"].sum()), None),
+                         ("Impressions", num(s["impressions"].sum()), None),
+                         ("Avg position", ratio(s["position"].mean()), "Lower is better"),
+                         ("CTR", pctv(s["clicks"].sum() / s["impressions"].sum()
+                          if s["impressions"].sum() else 0, 2), None)])
+            if "branded" in s:
+                b = s.groupby("branded").agg(clicks=("clicks", "sum")).reset_index()
+                b["branded"] = b["branded"].map({True: "Branded", False: "Non-branded"})
+                st.bar_chart(b.set_index("branded"), y="clicks", height=220)
+            q = s.groupby("query").agg(clicks=("clicks", "sum"), impressions=("impressions", "sum"),
+                position=("position", "mean")).reset_index().sort_values("clicks", ascending=False).head(15)
+            q["position"] = q["position"].round(1)
+            q["clicks"] = q["clicks"].map(num)
+            q["impressions"] = q["impressions"].map(num)
+            q.columns = ["Query", "Clicks", "Impressions", "Avg position"]
+            st.dataframe(q, use_container_width=True, hide_index=True)
 
 
+# ── Forecast & Pacing ────────────────────────────────────────────
 def page_forecast():
-    _stub("Forecast & Pacing",
-          "Are we going to hit plan?",
-          ["Run-rate vs target for the period",
-           "Projected month / quarter / year-end",
-           "Simple what-if scenarios (spend, AOV, conversion)"],
-          "Uses your Targets — no new data needed")
+    _report_top("Forecast & Pacing", "🎯")
+    st.caption("Pacing the current month vs target (independent of the period selector).")
+    month_start = ref.replace(day=1)
+    dim = calendar.monthrange(ref.year, ref.month)[1]
+    elapsed = ref.day
+    mtd = analytics.apply_filters(fact, month_start, ref, filters)
+    rows = []
+    for m in ["revenue", "orders", "spend", "visits"]:
+        actual = analytics.totals(mtd, [m])[m]
+        proj = actual / elapsed * dim if elapsed else 0
+        tgt = analytics.target_total(targets, month_start, month_start.replace(day=dim), m)
+        rows.append({"Metric": sem.nice(m), "MTD actual": sem.fmt(m, actual),
+                     "Projected month": sem.fmt(m, proj),
+                     "Month target": sem.fmt(m, tgt) if tgt else "—",
+                     "Projected vs target": fmt_pct((proj / tgt - 1) * 100) if tgt else "—"})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.caption(f"Day {elapsed} of {dim}. Projection is a simple linear run-rate.")
 
 
+# ── Order Insight (Analysis) ─────────────────────────────────────
 def page_order_insight():
-    _stub("Order Insight",
-          "Operator analysis bench — explore, find the story, roll findings into the monthly reports.",
-          ["Order value distribution (median, P90, threshold effects)",
-           "AOV contributors: units per order × price × mix",
-           "Basket composition and cross-sell (what's bought together)",
-           "Free-shipping / promo threshold impact on AOV"],
-          "Shopify line-item data for basket/mix analysis", tier="Analysis")
+    st.markdown('<div class="ml-eyebrow">🧾 Analysis</div>', unsafe_allow_html=True)
+    st.title("Order Insight")
+    chips([(f"📅 {period}", "accent"), (f"{cur[0]} → {cur[1]}", "")])
+    li = get_line_items()
+    if li is None or li.empty:
+        _empty("No line-item data.")
+        return
+    l = li[(li["created_at"] >= pd.Timestamp(cur[0])) & (li["created_at"] <= pd.Timestamp(cur[1]))]
+    if l.empty:
+        _empty()
+        return
+    orders = l.groupby("order_id").agg(value=("net_sales", "sum"), items=("quantity", "sum")).reset_index()
+    metrics_row([
+        ("Orders", num(len(orders)), None),
+        ("AOV", money(orders["value"].mean()), None),
+        ("Median order", money(orders["value"].median()), "Half of orders are below this"),
+        ("P90 order", money(orders["value"].quantile(0.9)), "Top 10% of orders exceed this"),
+    ])
+    metrics_row([("Avg items / order", ratio(orders["items"].mean()), None),
+                 ("Single-item orders", pctv((orders["items"] == 1).mean()), None),
+                 ("Units sold", num(l["quantity"].sum()), None)])
+    st.markdown("**Order value distribution**")
+    hist = alt.Chart(orders).mark_bar(color="#2563EB", opacity=0.8).encode(
+        x=alt.X("value:Q", bin=alt.Bin(maxbins=40), title="Order value (£)"),
+        y=alt.Y("count()", title="Orders"),
+    ).properties(height=280).configure_view(strokeWidth=0)
+    st.altair_chart(hist, use_container_width=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Revenue by category**")
+        cat = l.groupby("category")["net_sales"].sum().sort_values(ascending=False)
+        st.bar_chart(cat, height=260)
+    with c2:
+        st.markdown("**Top products by revenue**")
+        tp = l.groupby("product_title")["net_sales"].sum().sort_values(ascending=False).head(10)
+        st.bar_chart(tp, height=260)
 
 
+# ── Exec Digest (Intelligence) ───────────────────────────────────
 def page_exec_digest():
-    _stub("Exec Digest",
-          "The Monday-morning one-pager: the 2–3 numbers that moved, and why.",
-          ["Headline P&L + growth vs LY / target",
-           "Automatic 'what changed' callouts (alerts)",
-           "Roll-up of the key signal from every report"],
-          "Composes the other reports — built after they land", tier="layer")
+    st.markdown('<div class="ml-eyebrow">📌 Intelligence</div>', unsafe_allow_html=True)
+    st.title("Exec Digest")
+    chips([(f"📅 {period}", "accent"), (comparison, ""), (f"Data through {ref}", "")])
+    st.caption("The Monday-morning one-pager — the numbers that matter and what moved.")
+    _kpi_grid(["revenue", "contribution", "gross_margin_pct", "mer"])
+    _kpi_grid(["orders", "aov", "spend", "roas"])
+    st.markdown("#### What changed")
+    rows = analytics.kpi_rows(fact, ["revenue", "contribution", "orders", "spend", "roas",
+                                     "gross_margin_pct"], cur, cmp, targets, filters)
+    movers = sorted([r for r in rows if r["delta_pct"] is not None],
+                    key=lambda r: abs(r["delta_pct"]), reverse=True)
+    for r in movers[:4]:
+        m, d = r["metric"], r["delta_pct"]
+        good = (d >= 0) != (sem.metric_meta(m)["cf"] == "reverse")
+        emoji = "🟢" if good else "🔴"
+        st.markdown(f"{emoji} **{sem.nice(m)}** {sem.fmt(m, r['value'])} — "
+                    f"{fmt_pct(d)} {cmp_label}")
 
 
+# ── AI Analyst (Intelligence) — deterministic insights for now ───
 def page_ai_analyst():
-    _stub("AI Analyst",
-          "Ask anything about your commercial data in plain English.",
-          ["Natural-language questions → answers over the fact model",
-           "On-demand deeper analysis",
-           "Explains the 'why' behind any metric move"],
-          "Text-to-SQL over semantics.py — built once the fact model is stable", tier="layer")
+    st.markdown('<div class="ml-eyebrow">🤖 Intelligence</div>', unsafe_allow_html=True)
+    st.title("AI Analyst")
+    st.caption("Auto-generated insights over your commercial data. Natural-language "
+               "questions arrive once an LLM is wired in.")
+    st.text_input("Ask a question (coming soon)", placeholder="e.g. why did margin drop last week?",
+                  disabled=True)
+    st.markdown("#### Insights")
+    cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    paid = cur_df[cur_df["paid_ad_platform"] != sem.NA]
+    insights = []
+    if not paid.empty:
+        g = paid.groupby("paid_ad_platform").apply(
+            lambda d: d["platform_conversion_value_7d"].sum() / max(d["spend"].sum(), 1)).sort_values()
+        if len(g):
+            insights.append(f"📉 Lowest platform ROAS: **{g.index[0]}** at {g.iloc[0]:.2f}× — "
+                            f"review efficiency or reallocate budget.")
+            insights.append(f"📈 Highest platform ROAS: **{g.index[-1]}** at {g.iloc[-1]:.2f}×.")
+    rows = analytics.kpi_rows(fact, ["revenue", "gross_margin_pct", "spend", "roas"],
+                              cur, cmp, targets, filters)
+    mv = max((r for r in rows if r["delta_pct"] is not None),
+             key=lambda r: abs(r["delta_pct"]), default=None)
+    if mv:
+        insights.append(f"🔀 Biggest move: **{sem.nice(mv['metric'])}** {fmt_pct(mv['delta_pct'])} {cmp_label}.")
+    for i in insights:
+        with st.container(border=True):
+            st.markdown(i)
+    if not insights:
+        _empty("Not enough data to generate insights.")
+
+
+# ── Benchmarks (Intelligence) — illustrative until research feed ─
+BENCHMARKS = {"conversion_rate": 0.025, "aov": 75, "gross_margin_pct": 0.62,
+              "roas": 3.0, "cart_abandonment_rate": 0.70}
 
 
 def page_benchmarks():
-    _stub("Benchmarks",
-          "Is this good? Context that turns your numbers into judgement.",
-          ["Your key metrics vs category benchmarks (conversion, AOV, margin, returns)",
-           "Where you sit on the efficiency curve as you scale",
-           "Powered by Malleson Labs research"],
-          "Benchmark dataset from Malleson research", tier="layer")
+    st.markdown('<div class="ml-eyebrow">📐 Intelligence</div>', unsafe_allow_html=True)
+    st.title("Benchmarks")
+    st.caption("Your numbers vs category benchmarks. Illustrative for now — will be "
+               "powered by Malleson Labs research.")
+    cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    vals = analytics.totals(cur_df, list(BENCHMARKS.keys()))
+    rows = []
+    for m, bench in BENCHMARKS.items():
+        actual = vals[m]
+        gap = (actual / bench - 1) * 100 if bench else None
+        if sem.metric_meta(m)["cf"] == "reverse":
+            gap = -gap if gap is not None else None
+        rows.append({"Metric": sem.nice(m), "You": sem.fmt(m, actual),
+                     "Benchmark": sem.fmt(m, bench), "vs Benchmark": fmt_pct(gap)})
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.caption("Positive = better than benchmark (direction-aware for cost/abandonment metrics).")
 
 
 PAGES = {
