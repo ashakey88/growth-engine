@@ -101,7 +101,12 @@ PERIOD_PAGES = {"eCommerce", "Profitability", "Customers", "Product", "Acquisiti
 
 @st.cache_resource(show_spinner="Setting up demo data…")
 def _bootstrap():
-    if not storage.exists(config.FACT_KEY):
+    # The app is a READER. On local storage it self-seeds mock data for
+    # convenience; on R2 the pipeline (GitHub Action / local run) owns the data,
+    # so the app never writes there — it just reads what the pipeline built.
+    if storage.exists(config.FACT_KEY):
+        return True
+    if config.STORAGE_BACKEND == "local":
         run_pipeline.run_mock()
     return True
 
@@ -214,7 +219,12 @@ with st.sidebar:
 
 fact = get_fact()
 if fact is None or fact.empty:
-    st.error("No data yet. Run `python run_pipeline.py` or reconnect a source.")
+    if config.STORAGE_BACKEND == "r2":
+        st.warning("No data found in R2 yet. Run the pipeline to populate it — "
+                   "either the **Build data → R2** GitHub Action, or "
+                   "`STORAGE_BACKEND=r2 python run_pipeline.py` locally.")
+    else:
+        st.error("No data yet. Run `python run_pipeline.py` or reconnect a source.")
     st.stop()
 
 ref = fact["date"].max().date()
