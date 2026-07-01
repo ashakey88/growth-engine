@@ -15,6 +15,7 @@ import sys
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
+import altair as alt  # noqa: E402
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
@@ -38,10 +39,12 @@ h1 { font-size:2.1rem !important; }
 .stButton>button:hover,.stDownloadButton>button:hover { background:#1D4ED8; color:#fff; }
 .ml-brand { font-family:'DM Serif Display',serif; font-size:22px; color:#111827; }
 .ml-eyebrow { font-size:11px; font-weight:700; letter-spacing:0.14em; text-transform:uppercase; color:#2563EB; }
-.kpi-card { background:#fff; border:1px solid #E4E8EF; border-radius:12px; padding:16px 18px; box-shadow:0 1px 2px rgba(17,24,39,0.04); margin-bottom:6px; }
-.kpi-name { font-size:12px; color:#64748B; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; }
-.kpi-value { font-family:'DM Serif Display',serif; font-size:28px; color:#111827; line-height:1.1; margin:4px 0 6px; }
-.kpi-delta { font-size:12px; font-weight:600; display:inline-block; margin-right:12px; }
+.kpi-name { font-size:11px; color:#64748B; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; }
+.kpi-value { font-family:'DM Serif Display',serif; font-size:30px; color:#111827; line-height:1.1; margin:2px 0 8px; }
+.pill { display:inline-block; border-radius:999px; padding:3px 10px; font-size:11px; font-weight:700; margin:0 6px 4px 0; white-space:nowrap; }
+.pill.up { background:#DCFCE7; color:#15803D; }
+.pill.down { background:#FEE2E2; color:#B91C1C; }
+.pill.neutral { background:#F1F5F9; color:#64748B; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -143,19 +146,40 @@ def render_summary():
                 _kpi_card(row)
 
 
+def _pill(metric, pct, label):
+    if pct is None:
+        return f'<span class="pill neutral">— {label}</span>'
+    good = pct >= 0
+    if sem.metric_meta(metric)["cf"] == "reverse":
+        good = not good
+    cls = "up" if good else "down"
+    arrow = "▲" if pct >= 0 else "▼"
+    return f'<span class="pill {cls}">{arrow} {abs(pct):.0f}% {label}</span>'
+
+
+def _spark_chart(spark, metric):
+    color = "#2563EB"
+    base = alt.Chart(spark).encode(
+        x=alt.X("period:T", axis=None),
+        y=alt.Y(f"{metric}:Q", axis=None, scale=alt.Scale(zero=False)),
+    )
+    area = base.mark_area(opacity=0.12, color=color)
+    line = base.mark_line(color=color, strokeWidth=2.5)
+    return (area + line).properties(height=56).configure_view(strokeWidth=0)
+
+
 def _kpi_card(row):
     m = row["metric"]
-    dcol = delta_color(m, row["delta_pct"])
-    tcol = delta_color(m, row["vtarg_pct"])
-    st.markdown(
-        f'<div class="kpi-card"><div class="kpi-name">{sem.nice(m)}</div>'
-        f'<div class="kpi-value">{sem.fmt(m, row["value"])}</div>'
-        f'<span class="kpi-delta" style="color:{dcol}">{fmt_pct(row["delta_pct"])} {cmp_label}</span>'
-        f'<span class="kpi-delta" style="color:{tcol}">{fmt_pct(row["vtarg_pct"])} Targ</span></div>',
-        unsafe_allow_html=True)
-    spark = analytics.sparkline(fact, m, cur[1], 8, filters)
-    if not spark.empty:
-        st.line_chart(spark.set_index("period"), y=m, height=80)
+    with st.container(border=True):
+        st.markdown(
+            f'<div class="kpi-name">{sem.nice(m)}</div>'
+            f'<div class="kpi-value">{sem.fmt(m, row["value"])}</div>'
+            f'<div>{_pill(m, row["delta_pct"], cmp_label)}'
+            f'{_pill(m, row["vtarg_pct"], "Targ")}</div>',
+            unsafe_allow_html=True)
+        spark = analytics.sparkline(fact, m, cur[1], 8, filters)
+        if len(spark) > 1:
+            st.altair_chart(_spark_chart(spark, m), use_container_width=True)
 
 
 def render_trends():
