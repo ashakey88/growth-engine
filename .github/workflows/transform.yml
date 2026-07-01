@@ -1,0 +1,31 @@
+name: Transform → fact tables (R2)
+
+# Stage 2: read the raw parquet from R2 and build the fact tables back to R2.
+# Runs automatically after a successful pull, on a daily schedule, or manually.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 5 * * *" # 30 min after the pull job
+  workflow_run:
+    workflows: ["Pull integrations → R2 (raw)"]
+    types: [completed]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Skip if triggered by a *failed* pull; always run for manual/schedule.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Build fact tables from raw parquet in R2
+        env:
+          STORAGE_BACKEND: r2
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: python run_pipeline.py build

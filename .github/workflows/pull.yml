@@ -1,14 +1,14 @@
-name: Build data → R2
+name: Pull integrations → R2 (raw)
 
-# Runs the ELT pipeline and writes raw parquet + fact tables to Cloudflare R2.
-# Trigger manually (Actions tab → Run workflow) or on the daily schedule.
+# Stage 1: run the integrations and write one raw parquet per source to R2.
+# Manual, or daily at 05:00 UTC (ahead of the transform job).
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * *" # daily 06:00 UTC
+    - cron: "0 5 * * *"
 
 jobs:
-  build:
+  ingest:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,11 +16,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - name: Build and upload to R2
+      - name: Ingest sources → raw parquet in R2
         env:
           STORAGE_BACKEND: r2
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: python run_pipeline.py
+        run: python run_pipeline.py ingest
