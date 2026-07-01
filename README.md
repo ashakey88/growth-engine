@@ -71,8 +71,8 @@ file `app/streamlit_app.py`. It self-bootstraps with mock data on first load.
 | `ingest/mock_source.py` | Per-source mock data (matches real schemas) |
 | `ingest/shopify.py` | Real Shopify Admin API extractor |
 | `transform/build_fact.py` | Maps each source to the conformed grain → `fact.parquet` |
-| `analytics.py` | The app's data brain (filter, aggregate, KPIs) — no Streamlit |
-| `app/streamlit_app.py` | UI: Overview, Breakdown, Trend, Explorer, Connect, Targets |
+| `analytics.py` | Data brain: periods, TY/LY/target comparisons, KPIs, sparklines |
+| `app/streamlit_app.py` | Report UI: Exec Summary, KPI Overview, KPI Trends, Channels, Regions, Devices, Data Explorer, Connect, Targets |
 | `run_pipeline.py` | Runs the full ELT (mock or real Shopify) |
 
 ## What's not here yet

@@ -38,12 +38,12 @@ def _days(days):
     return [start + timedelta(days=i) for i in range(days)]
 
 
-def shopify_orders(days: int = 120, seed: int = 42) -> pd.DataFrame:
+def shopify_orders(days: int = 450, seed: int = 42) -> pd.DataFrame:
     """Order-level Shopify data (the sales source of truth)."""
     random.seed(seed)
     rows, oid = [], 1000
     for i, day in enumerate(_days(days)):
-        n = max(1, int(random.gauss(20 + i * 0.25, 4) * (1.25 if day.weekday() >= 5 else 1)))
+        n = max(1, int(random.gauss(22 + i * 0.05, 4) * (1.25 if day.weekday() >= 5 else 1)))
         for _ in range(n):
             oid += 1
             gross = max(15.0, round(random.gauss(82, 30), 2))
@@ -64,7 +64,7 @@ def shopify_orders(days: int = 120, seed: int = 42) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def ga4_data(days: int = 120, seed: int = 7) -> pd.DataFrame:
+def ga4_data(days: int = 450, seed: int = 7) -> pd.DataFrame:
     random.seed(seed)
     rows = []
     for i, day in enumerate(_days(days)):
@@ -91,7 +91,7 @@ def ga4_data(days: int = 120, seed: int = 7) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def meta_data(days: int = 120, seed: int = 13) -> pd.DataFrame:
+def meta_data(days: int = 450, seed: int = 13) -> pd.DataFrame:
     random.seed(seed)
     rows = []
     for day in _days(days):
@@ -114,7 +114,7 @@ def meta_data(days: int = 120, seed: int = 13) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def google_ads_data(days: int = 120, seed: int = 21) -> pd.DataFrame:
+def google_ads_data(days: int = 450, seed: int = 21) -> pd.DataFrame:
     random.seed(seed)
     rows = []
     for day in _days(days):
@@ -133,7 +133,7 @@ def google_ads_data(days: int = 120, seed: int = 21) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def targets(days: int = 120, seed: int = 99) -> pd.DataFrame:
+def targets(days: int = 450, seed: int = 99) -> pd.DataFrame:
     """Daily eCommerce targets, matching the targets column map in definitions.yaml."""
     random.seed(seed)
     rows = []
