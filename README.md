@@ -43,10 +43,16 @@ Shopify-shaped order data so every stage runs immediately.
 | `app/streamlit_app.py` | Dashboard reading the marts |
 | `run_pipeline.py` | Runs the full ELT |
 
+## Connect your sources
+
+The app has a **Connect sources** screen (sidebar). Shopify is a working
+connection — paste a store domain + Admin API token and it pulls real orders
+and rebuilds the dashboard. The other platforms are placeholder tiles for now.
+
 ## What's deliberately not here yet
 
-- Other sources (Meta, Google, TikTok, Microsoft, Klaviyo, GSC) — mock as CSV
-  next, then add real extractors one at a time.
-- Multi-tenancy / per-client auth and the source-connection UI.
+- Real connections for Meta, Google, TikTok, Microsoft, Klaviyo, GSC (only the
+  tiles exist — Shopify is the one wired up).
+- Multi-tenancy / per-client auth and secure credential storage.
 - The AI commercial analyst (text-to-SQL over the DuckDB schema).
 - Orchestration (a daily scheduled run).

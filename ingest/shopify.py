@@ -1,8 +1,8 @@
 """Real Shopify Admin API extractor.
 
-Used automatically when SHOPIFY_STORE and SHOPIFY_ACCESS_TOKEN are set.
 Returns the same schema as mock_source.generate_orders() so nothing downstream
-needs to change. Untested without live credentials — treat as a starting point.
+needs to change. Credentials can be passed in (from the connect screen) or fall
+back to environment config. Untested without live credentials.
 """
 from __future__ import annotations
 
@@ -16,19 +16,21 @@ import config
 API_VERSION = "2024-04"
 
 
-def _orders_url() -> str:
-    return f"https://{config.SHOPIFY_STORE}/admin/api/{API_VERSION}/orders.json"
-
-
-def fetch_orders(days: int = 120) -> pd.DataFrame:
+def fetch_orders(store: str | None = None, token: str | None = None,
+                 days: int = 120) -> pd.DataFrame:
     """Page through orders via the Admin REST API and flatten to order level."""
-    headers = {"X-Shopify-Access-Token": config.SHOPIFY_ACCESS_TOKEN}
+    store = store or config.SHOPIFY_STORE
+    token = token or config.SHOPIFY_ACCESS_TOKEN
+    if not store or not token:
+        raise ValueError("Shopify store and access token are required.")
+
+    headers = {"X-Shopify-Access-Token": token}
     params = {
         "status": "any",
         "limit": 250,
         "created_at_min": (pd.Timestamp.utcnow() - pd.Timedelta(days=days)).isoformat(),
     }
-    url = _orders_url()
+    url = f"https://{store}/admin/api/{API_VERSION}/orders.json"
     rows: list[dict] = []
 
     while url:
@@ -55,7 +57,6 @@ def fetch_orders(days: int = 120) -> pd.DataFrame:
                     "discounts": round(discounts, 2),
                     "net_sales": round(net, 2),
                     # COGS is not in the orders payload; needs InventoryItem cost.
-                    # Placeholder until that extractor is built.
                     "cogs": round(gross * 0.45, 2),
                     "shipping": float(o.get("total_shipping_price_set", {})
                                       .get("shop_money", {}).get("amount", 0) or 0),
@@ -64,9 +65,10 @@ def fetch_orders(days: int = 120) -> pd.DataFrame:
                 }
             )
 
-        # Shopify cursor pagination via the Link header.
-        url, params = _next_page(resp), None
+        url, params = _next_page(resp), None  # Shopify cursor pagination
 
+    if not rows:
+        raise ValueError("No orders returned — check the store domain and token.")
     return pd.DataFrame(rows)
 
 
