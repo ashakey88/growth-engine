@@ -34,17 +34,49 @@ html, body, [class*="css"], .stApp { font-family:'Inter',sans-serif; color:#1118
 .stApp { background:#FFFFFF; }
 h1,h2,h3,.ml-serif { font-family:'DM Serif Display',serif !important; letter-spacing:-0.5px; color:#111827; }
 h1 { font-size:2.1rem !important; }
+#MainMenu, footer, [data-testid="stDecoration"] { visibility:hidden; }
 [data-testid="stSidebar"] { background:#F7F8FA; border-right:1px solid #E4E8EF; }
-.stButton>button,.stDownloadButton>button { background:#2563EB; color:#fff; border:none; border-radius:8px; font-weight:600; padding:8px 18px; }
-.stButton>button:hover,.stDownloadButton>button:hover { background:#1D4ED8; color:#fff; }
+.stButton>button,.stDownloadButton>button { background:#2563EB; color:#fff; border:none; border-radius:8px; font-weight:600; padding:8px 18px; transition:all .15s; }
+.stButton>button:hover,.stDownloadButton>button:hover { background:#1D4ED8; color:#fff; transform:translateY(-1px); }
 .ml-brand { font-family:'DM Serif Display',serif; font-size:22px; color:#111827; }
-.ml-eyebrow { font-size:11px; font-weight:700; letter-spacing:0.14em; text-transform:uppercase; color:#2563EB; }
+.ml-eyebrow { font-size:11px; font-weight:700; letter-spacing:0.14em; text-transform:uppercase; color:#2563EB; margin-bottom:2px; }
+
+/* Sidebar radios -> clean nav menu */
+section[data-testid="stSidebar"] div[role="radiogroup"] { gap:2px; }
+section[data-testid="stSidebar"] div[role="radiogroup"] > label {
+  display:flex; align-items:center; width:100%; margin:0; padding:8px 12px;
+  border-radius:8px; cursor:pointer; font-size:14px; font-weight:500; color:#374151;
+  transition:background .12s,color .12s;
+}
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover { background:#EEF2FF; color:#2563EB; }
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:has(input:checked) { background:#2563EB; color:#fff; }
+section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-child { display:none; }
+
+/* Chips (context bar) */
+.chip-row { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 18px; }
+.chip { display:inline-flex; align-items:center; gap:6px; background:#F1F5F9; border:1px solid #E4E8EF;
+  color:#475569; border-radius:999px; padding:4px 12px; font-size:12px; font-weight:600; }
+.chip.accent { background:#EFF6FF; border-color:#BFDBFE; color:#2563EB; }
+.chip.live { background:#ECFDF5; border-color:#A7F3D0; color:#059669; }
+
+/* KPI cards */
+[data-testid="stVerticalBlockBorderWrapper"] { transition:box-shadow .15s, transform .15s; }
+[data-testid="stVerticalBlockBorderWrapper"]:hover { box-shadow:0 6px 20px rgba(17,24,39,0.08); transform:translateY(-2px); }
+.kpi-head { display:flex; align-items:center; justify-content:space-between; }
 .kpi-name { font-size:11px; color:#64748B; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; }
 .kpi-value { font-family:'DM Serif Display',serif; font-size:30px; color:#111827; line-height:1.1; margin:2px 0 8px; }
+.info { color:#CBD2DE; font-size:12px; cursor:help; }
 .pill { display:inline-block; border-radius:999px; padding:3px 10px; font-size:11px; font-weight:700; margin:0 6px 4px 0; white-space:nowrap; }
 .pill.up { background:#DCFCE7; color:#15803D; }
 .pill.down { background:#FEE2E2; color:#B91C1C; }
 .pill.neutral { background:#F1F5F9; color:#64748B; }
+
+/* Tabs + tables */
+.stTabs [data-baseweb="tab-list"] { gap:4px; border-bottom:1px solid #E4E8EF; }
+.stTabs [data-baseweb="tab"] { font-weight:600; color:#64748B; }
+.stTabs [aria-selected="true"] { color:#2563EB; }
+[data-testid="stDataFrame"] { border:1px solid #E4E8EF; border-radius:10px; }
+.ml-footer { color:#94A3B8; font-size:12px; text-align:center; margin-top:40px; padding-top:16px; border-top:1px solid #E4E8EF; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -92,17 +124,78 @@ def reset_caches():
     _bootstrap.clear()
 
 
+ICONS = {
+    "Reports": "📊", "Analysis": "🔬", "Intelligence": "✨", "Utility": "⚙️",
+    "eCommerce": "🛒", "Profitability": "💷", "Customers": "👥", "Product": "📦",
+    "Acquisition": "📣", "Forecast": "🎯", "Order Insight": "🧾", "Exec Digest": "📌",
+    "AI Analyst": "🤖", "Benchmarks": "📐", "Data Trust": "🛡️", "Data Table": "🔎",
+    "Connect sources": "🔌", "Targets": "🎚️",
+}
+BASE_DESC = {
+    "revenue": "Net sales (after discounts). Shopify is the source of truth.",
+    "gross_sales": "Sales before discounts.",
+    "discounts": "Total discount value given away.",
+    "cogs": "Cost of goods sold.",
+    "gross_profit": "Revenue minus COGS.",
+    "orders": "Number of orders placed.",
+    "visits": "Sessions (GA4).",
+    "engaged_visits": "Sessions that engaged (GA4).",
+    "add_to_carts": "Sessions with an add-to-cart.",
+    "checkouts": "Sessions that reached checkout.",
+    "spend": "Total ad spend across platforms.",
+    "impressions": "Ad impressions.", "clicks": "Ad clicks.",
+}
+
+
+def metric_help(m: str) -> str:
+    meta = sem.metric_meta(m)
+    if meta["kind"] == "derived":
+        f = meta["formula"].replace("/", "÷").replace("*", "×").replace("-", "−")
+        for tok in sorted(sem.BASE_METRICS, key=len, reverse=True):
+            f = f.replace(tok, sem.nice(tok))
+        return f"{sem.nice(m)} = {f}"
+    return BASE_DESC.get(m, sem.nice(m))
+
+
 def fmt_pct(p):
     return "—" if p is None else f"{p:+.0f}%"
 
 
-def delta_color(metric, pct):
-    if pct is None:
-        return "#94A3B8"
-    good = pct >= 0
-    if sem.metric_meta(metric)["cf"] == "reverse":
-        good = not good
-    return "#16A34A" if good else "#DC2626"
+def compact(m: str, value) -> str:
+    """Compact card value: £1.2M / 12.3k for big numbers; full format otherwise."""
+    meta = sem.metric_meta(m)
+    if value is None or (isinstance(value, float) and value != value):
+        return "—"
+    if meta["format"] in ("currency", "number"):
+        sign = "-" if value < 0 else ""
+        v, pre = abs(value), ("£" if meta["format"] == "currency" else "")
+        if v >= 1_000_000:
+            return f"{sign}{pre}{v/1_000_000:.1f}M"
+        if v >= 10_000:
+            return f"{sign}{pre}{v/1_000:.0f}k"
+        if v >= 1_000:
+            return f"{sign}{pre}{v/1_000:.1f}k"
+        return f"{sign}{pre}{v:,.0f}"
+    return sem.fmt(m, value)
+
+
+def chips(items):
+    """items: list of (label, css_class). Render a context chip row."""
+    html = '<div class="chip-row">' + "".join(
+        f'<span class="chip {c}">{lbl}</span>' for lbl, c in items) + "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def report_header(title):
+    live = conn_state().get("active_source") == "shopify"
+    st.markdown(f'<div class="ml-eyebrow">{ICONS.get(title,"")} Report</div>', unsafe_allow_html=True)
+    st.title(title)
+    chips([
+        (f"📅 {period}", "accent"),
+        (comparison, ""),
+        (f"Data through {ref}", ""),
+        ("● Live · Shopify" if live else "● Demo data", "live" if live else ""),
+    ])
 
 
 _bootstrap()
@@ -111,8 +204,13 @@ with st.sidebar:
     st.markdown('<div class="ml-eyebrow">Malleson Labs</div>'
                 '<div class="ml-brand">The Growth Engine</div>', unsafe_allow_html=True)
     st.markdown("---")
-    section = st.radio("Section", list(SECTIONS.keys()), horizontal=False)
-    page = st.radio(section, SECTIONS[section], label_visibility="collapsed")
+    section = st.radio("Section", list(SECTIONS.keys()),
+                       format_func=lambda s: f"{ICONS.get(s, '')}  {s}",
+                       label_visibility="collapsed")
+    st.caption(section.upper())
+    page = st.radio(section, SECTIONS[section],
+                    format_func=lambda p: f"{ICONS.get(p, '•')}  {p}",
+                    label_visibility="collapsed")
 
 fact = get_fact()
 if fact is None or fact.empty:
@@ -125,19 +223,22 @@ FILTER_DIMS = ["marketing_channel_group", "marketing_channel", "paid_ad_platform
 
 if page in PERIOD_PAGES:
     with st.sidebar:
-        st.markdown("**Period**")
-        period = st.selectbox("Period", analytics.PERIODS,
+        st.markdown("---")
+        period = st.selectbox("📅 Period", analytics.PERIODS,
                               index=analytics.PERIODS.index("Month to Date"),
-                              label_visibility="collapsed")
-        comparison = st.selectbox("Compare", ["vs Last Year", "vs Prior Period"],
-                                  label_visibility="collapsed")
-        st.markdown("**Filters**")
+                              help="The reporting window, relative to the latest data.")
+        comparison = st.selectbox("⚖️ Compare against", ["vs Last Year", "vs Prior Period"],
+                                  help="What every % change is measured against.")
+        fkeys = {dim: f"flt_{dim}" for dim in FILTER_DIMS}
+        active = sum(len(st.session_state.get(k, [])) for k in fkeys.values())
         filters = {}
-        for dim in FILTER_DIMS:
-            opts = sorted([v for v in fact[dim].dropna().unique() if v != sem.NA])
-            sel = st.multiselect(sem.nice(dim), opts, default=[])
-            if sel:
-                filters[dim] = sel
+        with st.expander(f"🔎 Filters{f'  ·  {active} active' if active else ''}",
+                         expanded=bool(active)):
+            for dim in FILTER_DIMS:
+                opts = sorted([v for v in fact[dim].dropna().unique() if v != sem.NA])
+                sel = st.multiselect(sem.nice(dim), opts, key=fkeys[dim])
+                if sel:
+                    filters[dim] = sel
     cur = analytics.resolve_period(period, ref)
     cmp = analytics.ly_range(*cur) if comparison == "vs Last Year" else analytics.prior_period(*cur)
     cmp_label = "LY" if comparison == "vs Last Year" else "Prior"
@@ -168,11 +269,17 @@ def _pill(metric, pct, label):
 
 def _spark_chart(spark, metric):
     color = "#2563EB"
+    grad = alt.Gradient(gradient="linear",
+                        stops=[alt.GradientStop(color="#FFFFFF", offset=0),
+                               alt.GradientStop(color="#93C5FD", offset=1)],
+                        x1=1, x2=1, y1=1, y2=0)
     base = alt.Chart(spark).encode(
         x=alt.X("period:T", axis=None),
         y=alt.Y(f"{metric}:Q", axis=None, scale=alt.Scale(zero=False)),
+        tooltip=[alt.Tooltip("period:T", title="Week"),
+                 alt.Tooltip(f"{metric}:Q", title=sem.nice(metric), format=",.0f")],
     )
-    area = base.mark_area(opacity=0.12, color=color)
+    area = base.mark_area(color=grad, opacity=0.5)
     line = base.mark_line(color=color, strokeWidth=2.5)
     return (area + line).properties(height=56).configure_view(strokeWidth=0)
 
@@ -181,8 +288,9 @@ def _kpi_card(row):
     m = row["metric"]
     with st.container(border=True):
         st.markdown(
-            f'<div class="kpi-name">{sem.nice(m)}</div>'
-            f'<div class="kpi-value">{sem.fmt(m, row["value"])}</div>'
+            f'<div class="kpi-head"><span class="kpi-name">{sem.nice(m)}</span>'
+            f'<span class="info" title="{metric_help(m)}">ⓘ</span></div>'
+            f'<div class="kpi-value" title="{sem.fmt(m, row["value"])}">{compact(m, row["value"])}</div>'
             f'<div>{_pill(m, row["delta_pct"], cmp_label)}'
             f'{_pill(m, row["vtarg_pct"], "Targ")}</div>',
             unsafe_allow_html=True)
@@ -194,10 +302,15 @@ def _kpi_card(row):
 def render_trends():
     c1, c2 = st.columns(2)
     metric = c1.selectbox("Metric", ALL_KPIS, index=ALL_KPIS.index("revenue"),
-                          format_func=sem.nice, key="tr_metric")
+                          format_func=sem.nice, key="tr_metric",
+                          help="Pick any KPI to chart this year vs last year.")
     freq = c2.selectbox("Frequency", ["Weekly", "Daily", "Monthly"], key="tr_freq")
+    st.caption(metric_help(metric))
     fmap = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
     cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    if cur_df.empty:
+        _empty()
+        return
     ly = analytics.ly_range(*cur)
     ly_df = analytics.apply_filters(fact, ly[0], ly[1], filters)
     ty = analytics.trend(cur_df, metric, fmap[freq]).reset_index(drop=True)
@@ -211,13 +324,20 @@ def render_trends():
     st.line_chart(chart, height=340)
 
 
+def _empty(msg="No data for this period and these filters."):
+    st.info(f"🔍 {msg} Try a wider period or clearing filters.")
+
+
 def _comparison_section(dimension, metrics):
+    view = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    if view.empty:
+        _empty()
+        return
     tbl = analytics.comparison_table(fact, dimension, metrics, cur, cmp, filters)
     disp = pd.DataFrame({sem.nice(dimension): tbl[dimension]})
     for m in metrics:
         disp[sem.nice(m)] = tbl[m].map(lambda v, mm=m: sem.fmt(mm, v))
         disp[f"vs {cmp_label}"] = tbl[f"{m}__vs%"].map(fmt_pct)
-    st.caption(f"{cur[0]} → {cur[1]}  vs {cmp_label} ({cmp[0]} → {cmp[1]})")
     st.dataframe(disp, use_container_width=True, hide_index=True)
 
 
@@ -238,8 +358,7 @@ def _kpi_grid(metrics):
 
 
 def page_report():
-    st.title("eCommerce")
-    st.caption(_period_caption())
+    report_header("eCommerce")
     tabs = st.tabs(["Summary", "Trends", "Channels", "Regions", "Devices"])
     with tabs[0]:
         render_summary()
@@ -255,17 +374,23 @@ def page_report():
 
 # ── Data Table (simplified explorer) ─────────────────────────────
 def page_data_table():
+    st.markdown('<div class="ml-eyebrow">🔎 Utility</div>', unsafe_allow_html=True)
     st.title("Data Table")
-    st.caption(f"{period} · {cur[0]} → {cur[1]}")
+    chips([(f"📅 {period}", "accent"), (f"{cur[0]} → {cur[1]}", "")])
     view = analytics.apply_filters(fact, cur[0], cur[1], filters)
     dims = ["date", "source", "marketing_channel_group", "marketing_channel",
             "paid_ad_platform", "geo_region", "geo_market", "device"]
     c1, c2 = st.columns(2)
-    gdims = c1.multiselect("Dimensions", dims, default=["marketing_channel"], format_func=sem.nice)
+    gdims = c1.multiselect("Dimensions", dims, default=["marketing_channel"], format_func=sem.nice,
+                           help="Group the table by one or more dimensions.")
     metrics = c2.multiselect("Metrics", sem.ALL_METRICS,
-                             default=["revenue", "orders", "spend", "roas"], format_func=sem.nice)
+                             default=["revenue", "orders", "spend", "roas"], format_func=sem.nice,
+                             help="Add any base or derived metric.")
     if not gdims or not metrics:
         st.info("Pick at least one dimension and one metric.")
+        return
+    if view.empty:
+        _empty()
         return
     out = analytics.aggregate(view, gdims, metrics)
     disp = out.copy()
@@ -366,8 +491,7 @@ def page_targets():
 
 # ── Profitability (flagship — built from data in hand) ───────────
 def page_profitability():
-    st.title("Profitability")
-    st.caption(_period_caption())
+    report_header("Profitability")
     st.markdown("#### Headline")
     _kpi_grid(["revenue", "gross_profit", "gross_margin_pct", "contribution"])
     _kpi_grid(["contribution_margin", "spend", "mer", "discount_rate"])
@@ -414,6 +538,8 @@ def page_data_trust():
 
 # ── Informative stubs for the rest of the suite ──────────────────
 def _stub(title, purpose, sections, needs=None, tier="Report"):
+    st.markdown(f'<div class="ml-eyebrow">{ICONS.get(title.split(" ")[0], "✨")} {tier}</div>',
+                unsafe_allow_html=True)
     st.title(title)
     st.caption(purpose)
     st.info(f"**Coming next.** This {tier.lower()} is scaffolded — here's what it will contain.")
@@ -421,7 +547,7 @@ def _stub(title, purpose, sections, needs=None, tier="Report"):
     for s in sections:
         st.markdown(f"- {s}")
     if needs:
-        st.warning(f"Unlocks when connected: {needs}")
+        st.warning(f"🔌 Unlocks when connected: {needs}")
 
 
 def page_customers():
@@ -514,3 +640,7 @@ try:
 except Exception as e:
     st.error("Something went wrong rendering this page.")
     st.exception(e)
+
+st.markdown('<div class="ml-footer">The Growth Engine · Malleson Labs — '
+            'commercial intelligence for scaling ecommerce brands</div>',
+            unsafe_allow_html=True)
