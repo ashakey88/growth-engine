@@ -149,3 +149,216 @@ def targets(days: int = 450, seed: int = 99) -> pd.DataFrame:
             "target_checkouts": random.randint(300, 600),
         })
     return pd.DataFrame(rows)
+
+
+# ── Product catalog + line items (Shopify) ───────────────────────
+CATEGORIES = [
+    ("Helmets", 280, 480), ("Apparel", 45, 120), ("Accessories", 15, 60),
+    ("Bags", 60, 140), ("Electronics", 90, 260), ("Spares", 8, 40),
+]
+
+
+def products(seed: int = 5) -> pd.DataFrame:
+    """A small catalog: product_id, title, category, price, unit_cost."""
+    random.seed(seed)
+    rows, pid = [], 0
+    for cat, lo, hi in CATEGORIES:
+        for i in range(1, 8):  # ~7 products per category
+            pid += 1
+            price = round(random.uniform(lo, hi), 2)
+            rows.append({
+                "product_id": f"P{pid:04d}",
+                "product_title": f"{cat[:-1] if cat.endswith('s') else cat} {i}",
+                "category": cat,
+                "price": price,
+                "unit_cost": round(price * random.uniform(0.38, 0.55), 2),
+            })
+    return pd.DataFrame(rows)
+
+
+def shopify_line_items(catalog: pd.DataFrame, days: int = 450, seed: int = 42) -> pd.DataFrame:
+    """Order line items — the grain that feeds product/margin/returns analysis."""
+    random.seed(seed)
+    cat = catalog.to_dict("records")
+    rows, oid = [], 100000
+    for i, day in enumerate(_days(days)):
+        n = max(1, int(random.gauss(22 + i * 0.05, 4) * (1.25 if day.weekday() >= 5 else 1)))
+        for _ in range(n):
+            oid += 1
+            created = day + timedelta(hours=random.randint(6, 23))
+            customer = random.randint(1, 1400)
+            country = _pick(COUNTRIES)
+            for _ in range(random.randint(1, 3)):  # 1-3 lines per order
+                p = random.choice(cat)
+                qty = random.randint(1, 2)
+                disc_rate = random.choice([0, 0, 0, 0.1, 0.15, 0.2])
+                gross = round(p["price"] * qty, 2)
+                disc = round(gross * disc_rate, 2)
+                rows.append({
+                    "order_id": oid, "created_at": created, "customer_id": customer,
+                    "country": country, "product_id": p["product_id"],
+                    "product_title": p["product_title"], "category": p["category"],
+                    "quantity": qty, "unit_price": p["price"],
+                    "gross_sales": gross, "discounts": disc,
+                    "net_sales": round(gross - disc, 2),
+                    "cogs": round(p["unit_cost"] * qty, 2),
+                })
+    return pd.DataFrame(rows)
+
+
+def shopify_orders_from_lines(lines: pd.DataFrame) -> pd.DataFrame:
+    """Roll line items up to the order-level schema used by the marketing fact."""
+    g = lines.groupby("order_id").agg(
+        created_at=("created_at", "min"), customer_id=("customer_id", "first"),
+        country=("country", "first"), gross_sales=("gross_sales", "sum"),
+        discounts=("discounts", "sum"), net_sales=("net_sales", "sum"),
+        cogs=("cogs", "sum"),
+    ).reset_index()
+    g["shipping"] = [random.choice([0, 0, 3.95, 4.95]) for _ in range(len(g))]
+    g["total_price"] = (g["net_sales"] + g["shipping"]).round(2)
+    g["currency"] = "GBP"
+    return g
+
+
+def shopify_inventory(catalog: pd.DataFrame, days: int = 450, seed: int = 8) -> pd.DataFrame:
+    """Daily on-hand stock per product (random walk with occasional restocks)."""
+    random.seed(seed)
+    rows = []
+    stock = {r["product_id"]: random.randint(200, 1500) for _, r in catalog.iterrows()}
+    for day in _days(days):
+        for pid in stock:
+            stock[pid] -= random.randint(0, 25)
+            if stock[pid] < 60 and random.random() < 0.3:
+                stock[pid] += random.randint(300, 800)  # restock
+            stock[pid] = max(0, stock[pid])
+            rows.append({"date": day.strftime("%Y-%m-%d"), "product_id": pid,
+                         "on_hand": stock[pid]})
+    return pd.DataFrame(rows)
+
+
+RETURN_REASONS = ["Too small", "Too large", "Not as described", "Faulty",
+                  "Changed mind", "Arrived late", "Better price elsewhere"]
+
+
+def shopify_returns(lines: pd.DataFrame, seed: int = 11) -> pd.DataFrame:
+    """~10% of line items returned, with a reason and refund amount."""
+    random.seed(seed)
+    sample = lines.sample(frac=0.10, random_state=seed)
+    rows = []
+    for _, r in sample.iterrows():
+        rows.append({
+            "return_id": f"R{random.randint(100000, 999999)}",
+            "order_id": r["order_id"],
+            "date": (pd.to_datetime(r["created_at"]) + pd.Timedelta(days=random.randint(3, 20))
+                     ).strftime("%Y-%m-%d"),
+            "product_id": r["product_id"], "category": r["category"],
+            "country": r["country"], "quantity": r["quantity"],
+            "refund_amount": r["net_sales"], "reason": random.choice(RETURN_REASONS),
+        })
+    return pd.DataFrame(rows)
+
+
+def ga4_items(catalog: pd.DataFrame, days: int = 450, seed: int = 17) -> pd.DataFrame:
+    """Item-level GA4 funnel: product views and add-to-carts per product per day."""
+    random.seed(seed)
+    cat = catalog.to_dict("records")
+    rows = []
+    for day in _days(days):
+        for p in random.sample(cat, k=int(len(cat) * 0.7)):  # not every product every day
+            views = random.randint(20, 600)
+            atc = int(views * random.uniform(0.04, 0.13))
+            rows.append({
+                "date": day.strftime("%Y-%m-%d"), "product_id": p["product_id"],
+                "product_title": p["product_title"], "category": p["category"],
+                "item_views": views, "item_add_to_carts": atc,
+                "item_purchases": int(atc * random.uniform(0.25, 0.55)),
+            })
+    return pd.DataFrame(rows)
+
+
+def microsoft_ads_data(days: int = 450, seed: int = 23) -> pd.DataFrame:
+    random.seed(seed)
+    rows = []
+    campaigns = [("Brand_Search_MS", "SEARCH"), ("Generic_Search_MS", "SEARCH")]
+    for day in _days(days):
+        d = day.strftime("%Y-%m-%d")
+        for name, gtype in campaigns:
+            spend = round(random.uniform(15, 120), 2)
+            imp = int(spend * random.uniform(120, 240))
+            clk = int(imp * random.uniform(0.02, 0.05))
+            conv = round(random.uniform(0.5, 6), 1)
+            rows.append({"date": d, "campaign_name": name, "campaign_type": gtype,
+                         "country": _pick(COUNTRIES), "spend": spend, "impressions": imp,
+                         "clicks": clk, "conversions": conv,
+                         "conversions_value": round(conv * random.uniform(70, 120), 2)})
+    return pd.DataFrame(rows)
+
+
+def tiktok_ads_data(days: int = 450, seed: int = 29) -> pd.DataFrame:
+    random.seed(seed)
+    rows = []
+    campaigns = ["TOFU_Awareness_TT", "BOFU_Conversion_TT"]
+    for day in _days(days):
+        d = day.strftime("%Y-%m-%d")
+        for camp in campaigns:
+            spend = round(random.uniform(20, 180), 2)
+            imp = int(spend * random.uniform(300, 600))
+            clk = int(imp * random.uniform(0.006, 0.015))
+            conv = round(random.uniform(0.5, 7), 1)
+            rows.append({"date": d, "campaign_name": camp, "country": _pick(COUNTRIES),
+                         "spend": spend, "impressions": imp, "clicks": clk,
+                         "conversions_7d": conv,
+                         "conversion_value_7d": round(conv * random.uniform(70, 110), 2)})
+    return pd.DataFrame(rows)
+
+
+def klaviyo_data(days: int = 450, seed: int = 31) -> pd.DataFrame:
+    """Email/CRM: flows (always-on) + weekly campaigns."""
+    random.seed(seed)
+    flows = ["Welcome", "Abandoned Cart", "Browse Abandon", "Post-Purchase", "Win-back"]
+    rows = []
+    for day in _days(days):
+        d = day.strftime("%Y-%m-%d")
+        for f in flows:  # flows fire daily
+            recips = random.randint(200, 1500)
+            opens = int(recips * random.uniform(0.35, 0.6))
+            clicks = int(opens * random.uniform(0.08, 0.2))
+            orders = int(clicks * random.uniform(0.05, 0.15))
+            rows.append({"date": d, "name": f, "type": "flow", "recipients": recips,
+                         "opens": opens, "clicks": clicks, "orders": orders,
+                         "revenue": round(orders * random.uniform(60, 110), 2)})
+        if day.weekday() == 2:  # weekly campaign on Wednesdays
+            recips = random.randint(8000, 20000)
+            opens = int(recips * random.uniform(0.25, 0.45))
+            clicks = int(opens * random.uniform(0.05, 0.15))
+            orders = int(clicks * random.uniform(0.03, 0.1))
+            rows.append({"date": d, "name": f"Campaign {day.strftime('%d %b')}",
+                         "type": "campaign", "recipients": recips, "opens": opens,
+                         "clicks": clicks, "orders": orders,
+                         "revenue": round(orders * random.uniform(60, 110), 2)})
+    return pd.DataFrame(rows)
+
+
+SEO_QUERIES = [
+    ("brand name", True), ("brand name helmet", True), ("brand review", True),
+    ("motorcycle helmet", False), ("smart helmet", False), ("bluetooth helmet", False),
+    ("lightweight helmet", False), ("carbon helmet", False), ("ski helmet", False),
+    ("best motorcycle helmet", False), ("helmet with camera", False),
+    ("waterproof motorcycle bag", False), ("motorcycle accessories", False),
+]
+
+
+def search_console_data(days: int = 450, seed: int = 37) -> pd.DataFrame:
+    """SEO: clicks/impressions/position per query per day (Search Console shape)."""
+    random.seed(seed)
+    rows = []
+    for day in _days(days):
+        d = day.strftime("%Y-%m-%d")
+        for query, branded in SEO_QUERIES:
+            imp = random.randint(200, 6000) if not branded else random.randint(400, 3000)
+            pos = round(random.uniform(1.2, 4.5) if branded else random.uniform(3, 25), 1)
+            ctr = (0.35 if branded else 0.03) * random.uniform(0.6, 1.4) / max(1, pos / 3)
+            clicks = int(imp * min(0.6, ctr))
+            rows.append({"date": d, "query": query, "branded": branded,
+                         "clicks": clicks, "impressions": imp, "position": pos})
+    return pd.DataFrame(rows)

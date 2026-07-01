@@ -34,6 +34,27 @@ def load_targets() -> pd.DataFrame | None:
     return df
 
 
+def _load_dated(key: str) -> pd.DataFrame | None:
+    df = storage.read_df(key)
+    if df is None:
+        return None
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def load_product_fact():
+    return _load_dated(config.FACT_PRODUCT_KEY)
+
+
+def load_email_fact():
+    return _load_dated(config.FACT_EMAIL_KEY)
+
+
+def load_seo_fact():
+    return _load_dated(config.FACT_SEO_KEY)
+
+
 def date_bounds(fact: pd.DataFrame):
     return fact["date"].min().date(), fact["date"].max().date()
 

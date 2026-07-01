@@ -16,11 +16,25 @@ DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Storage keys (same layout on local disk or in R2) ────────────
-SHOPIFY_KEY = "shopify/shopify_data.parquet"
+# Raw per-source (as pulled from each API)
+SHOPIFY_KEY = "shopify/shopify_data.parquet"            # order-level
+SHOPIFY_LINEITEMS_KEY = "shopify/shopify_line_items.parquet"
+SHOPIFY_PRODUCTS_KEY = "shopify/shopify_products.parquet"
+SHOPIFY_INVENTORY_KEY = "shopify/shopify_inventory.parquet"
+SHOPIFY_RETURNS_KEY = "shopify/shopify_returns.parquet"
 GA4_KEY = "ga4/ga4_data.parquet"
+GA4_ITEMS_KEY = "ga4/ga4_items.parquet"                 # item-level funnel
 META_KEY = "meta/meta_data.parquet"
 GOOGLE_KEY = "google_ads/google_ads_data.parquet"
-FACT_KEY = "fact/fact.parquet"
+MICROSOFT_KEY = "microsoft/microsoft_data.parquet"
+TIKTOK_KEY = "tiktok/tiktok_data.parquet"
+KLAVIYO_KEY = "klaviyo/klaviyo_data.parquet"
+GSC_KEY = "gsc/gsc_data.parquet"
+# Built fact tables (one per grain/domain)
+FACT_KEY = "fact/fact.parquet"                          # marketing (stacked)
+FACT_PRODUCT_KEY = "fact/fact_product.parquet"          # date x product x geo
+FACT_EMAIL_KEY = "fact/fact_email.parquet"              # date x campaign/flow
+FACT_SEO_KEY = "fact/fact_seo.parquet"                  # date x query
 TARGETS_KEY = "targets/targets_ecommerce.parquet"
 CONNECTIONS_KEY = "connections.json"
 

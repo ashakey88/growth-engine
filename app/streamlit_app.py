@@ -525,15 +525,29 @@ def page_data_trust():
     c1.metric("Data through", str(fact["date"].max().date()))
     c2.metric("Sales source", "Shopify (live)" if conn.get("active_source") == "shopify" else "Demo data")
     c3.metric("Fact rows", f"{len(fact):,}")
-    keys = {"Shopify": config.SHOPIFY_KEY, "GA4": config.GA4_KEY,
-            "Meta": config.META_KEY, "Google Ads": config.GOOGLE_KEY,
-            "Targets": config.TARGETS_KEY}
-    counts = fact.groupby("source").size().to_dict()
-    src_map = {"Shopify": "shopify", "GA4": "ga4", "Meta": "meta", "Google Ads": "google_ads"}
-    rows = [{"Source": name, "Connected": "✅" if storage.exists(key) else "—",
-             "Fact rows": f"{counts.get(src_map.get(name, ''), 0):,}" if name in src_map else "—"}
-            for name, key in keys.items()]
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.markdown("#### Sources")
+    sources = [
+        ("Shopify (orders)", config.SHOPIFY_KEY), ("Shopify (line items)", config.SHOPIFY_LINEITEMS_KEY),
+        ("Shopify (inventory)", config.SHOPIFY_INVENTORY_KEY), ("Shopify (returns)", config.SHOPIFY_RETURNS_KEY),
+        ("GA4 (sessions)", config.GA4_KEY), ("GA4 (items)", config.GA4_ITEMS_KEY),
+        ("Meta Ads", config.META_KEY), ("Google Ads", config.GOOGLE_KEY),
+        ("Microsoft Ads", config.MICROSOFT_KEY), ("TikTok Ads", config.TIKTOK_KEY),
+        ("Klaviyo (email)", config.KLAVIYO_KEY), ("Search Console (SEO)", config.GSC_KEY),
+        ("Targets", config.TARGETS_KEY),
+    ]
+    st.dataframe(pd.DataFrame([{"Source": n, "Status": "✅ Connected" if storage.exists(k) else "— Not connected"}
+                              for n, k in sources]), use_container_width=True, hide_index=True)
+
+    st.markdown("#### Fact tables")
+    facts = [("Marketing (stacked)", config.FACT_KEY), ("Product", config.FACT_PRODUCT_KEY),
+             ("Email", config.FACT_EMAIL_KEY), ("SEO", config.FACT_SEO_KEY)]
+    st.dataframe(pd.DataFrame([{"Fact table": n, "Built": "✅" if storage.exists(k) else "—"}
+                              for n, k in facts]), use_container_width=True, hide_index=True)
+
+    st.markdown("#### Marketing fact by source")
+    counts = fact.groupby("source").size().reset_index(name="rows")
+    counts.columns = ["Source", "Rows"]
+    st.dataframe(counts, use_container_width=True, hide_index=True)
 
 
 # ── Informative stubs for the rest of the suite ──────────────────

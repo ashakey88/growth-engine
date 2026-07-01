@@ -163,6 +163,53 @@ def map_google(df: pd.DataFrame) -> pd.DataFrame:
     return out[sem.FACT_COLUMNS]
 
 
+def map_microsoft(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=sem.FACT_COLUMNS)
+    name = df["campaign_name"].fillna("")
+    channel = "Paid Search"
+    gtype = df.get("campaign_type", pd.Series([""] * len(df)))
+    ctype = [sem.campaign_type(n, channel, g) for n, g in zip(name, gtype)]
+    out = _assemble({
+        "date": df["date"].astype(str), "source": "microsoft",
+        "marketing_channel": channel, "marketing_channel_group": "Paid",
+        "marketing_campaign": name.values, "paid_ad_platform": "Microsoft",
+        "paid_campaign_type": ctype,
+        "geo_market": df["country"].map(sem.geo_market).values,
+        "geo_region": df["country"].map(sem.geo_region).values,
+        "geo_country": df["country"].map(sem.country_name).values, "device": sem.NA,
+    }, len(df))
+    out["spend"] = df["spend"].values
+    out["impressions"] = df["impressions"].values
+    out["clicks"] = df["clicks"].values
+    out["platform_conversions_7d"] = df["conversions"].values
+    out["platform_conversion_value_7d"] = df["conversions_value"].values
+    return out[sem.FACT_COLUMNS]
+
+
+def map_tiktok(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=sem.FACT_COLUMNS)
+    name = df["campaign_name"].fillna("")
+    channel = "Paid Social"
+    ctype = [sem.campaign_type(n, channel) for n in name]
+    out = _assemble({
+        "date": df["date"].astype(str), "source": "tiktok",
+        "marketing_channel": channel, "marketing_channel_group": "Paid",
+        "marketing_campaign": name.map(sem.meta_campaign).values, "paid_ad_platform": "Tiktok",
+        "paid_campaign_type": ctype,
+        "geo_market": df["country"].map(sem.geo_market).values,
+        "geo_region": df["country"].map(sem.geo_region).values,
+        "geo_country": df["country"].map(sem.country_name).values, "device": sem.NA,
+    }, len(df))
+    out["spend"] = df["spend"].values
+    out["impressions"] = df["impressions"].values
+    out["clicks"] = df["clicks"].values
+    out["platform_conversions_7d"] = df["conversions_7d"].values
+    out["platform_conversion_value_7d"] = df["conversion_value_7d"].values
+    return out[sem.FACT_COLUMNS]
+
+
 def build() -> int:
     """Read every source parquet, conform, union, write fact/fact.parquet."""
     parts = [
@@ -170,6 +217,8 @@ def build() -> int:
         map_ga4(storage.read_df(config.GA4_KEY)),
         map_meta(storage.read_df(config.META_KEY)),
         map_google(storage.read_df(config.GOOGLE_KEY)),
+        map_microsoft(storage.read_df(config.MICROSOFT_KEY)),
+        map_tiktok(storage.read_df(config.TIKTOK_KEY)),
     ]
     fact = pd.concat(parts, ignore_index=True)
 
@@ -184,5 +233,70 @@ def build() -> int:
     return len(fact)
 
 
+# ── Product fact (date x product) — sales/margin + funnel + stock + returns ──
+def build_product() -> int:
+    lines = storage.read_df(config.SHOPIFY_LINEITEMS_KEY)
+    if lines is None or lines.empty:
+        return 0
+    lines = lines.copy()
+    lines["date"] = pd.to_datetime(lines["created_at"]).dt.strftime("%Y-%m-%d")
+    base = lines.groupby(["date", "product_id", "product_title", "category"]).agg(
+        units=("quantity", "sum"), revenue=("net_sales", "sum"),
+        gross_sales=("gross_sales", "sum"), discounts=("discounts", "sum"),
+        cogs=("cogs", "sum"),
+    ).reset_index()
+    base["gross_profit"] = (base["revenue"] - base["cogs"]).round(2)
+
+    items = storage.read_df(config.GA4_ITEMS_KEY)
+    if items is not None and not items.empty:
+        it = items.groupby(["date", "product_id"]).agg(
+            product_views=("item_views", "sum"),
+            product_add_to_carts=("item_add_to_carts", "sum")).reset_index()
+        base = base.merge(it, on=["date", "product_id"], how="left")
+
+    inv = storage.read_df(config.SHOPIFY_INVENTORY_KEY)
+    if inv is not None and not inv.empty:
+        iv = inv.groupby(["date", "product_id"])["on_hand"].mean().reset_index()
+        base = base.merge(iv, on=["date", "product_id"], how="left")
+
+    rets = storage.read_df(config.SHOPIFY_RETURNS_KEY)
+    if rets is not None and not rets.empty:
+        rt = rets.groupby(["date", "product_id"]).agg(
+            returned_units=("quantity", "sum"),
+            refund_amount=("refund_amount", "sum")).reset_index()
+        base = base.merge(rt, on=["date", "product_id"], how="left")
+
+    storage.write_df(base, config.FACT_PRODUCT_KEY)
+    print(f"fact_product rows: {len(base)}")
+    return len(base)
+
+
+# ── Email fact (Klaviyo) and SEO fact (Search Console): light pass-through ──
+def build_email() -> int:
+    df = storage.read_df(config.KLAVIYO_KEY)
+    if df is None or df.empty:
+        return 0
+    storage.write_df(df, config.FACT_EMAIL_KEY)
+    print(f"fact_email rows: {len(df)}")
+    return len(df)
+
+
+def build_seo() -> int:
+    df = storage.read_df(config.GSC_KEY)
+    if df is None or df.empty:
+        return 0
+    storage.write_df(df, config.FACT_SEO_KEY)
+    print(f"fact_seo rows: {len(df)}")
+    return len(df)
+
+
+def build_all() -> int:
+    n = build()
+    build_product()
+    build_email()
+    build_seo()
+    return n
+
+
 if __name__ == "__main__":
-    build()
+    build_all()

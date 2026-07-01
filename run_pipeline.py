@@ -18,26 +18,39 @@ from transform import build_fact
 
 
 def _ensure_marketing_mock() -> None:
-    """Populate GA4/Meta/Google/targets with mock data if not already present,
-    so the dashboard is fully populated even when only Shopify is connected."""
+    """Populate all non-Shopify sources with mock data if not already present,
+    so the platform is fully populated even when only Shopify is connected."""
     if not storage.exists(config.GA4_KEY):
-        storage.write_df(mock_source.ga4_data(), config.GA4_KEY)
-    if not storage.exists(config.META_KEY):
-        storage.write_df(mock_source.meta_data(), config.META_KEY)
-    if not storage.exists(config.GOOGLE_KEY):
-        storage.write_df(mock_source.google_ads_data(), config.GOOGLE_KEY)
-    if not storage.exists(config.TARGETS_KEY):
-        storage.write_df(mock_source.targets(), config.TARGETS_KEY)
+        run_mock()  # simplest: (re)generate the full mock universe
 
 
 def run_mock() -> int:
-    """Write mock data for every source + targets, then build the fact table."""
-    storage.write_df(mock_source.shopify_orders(), config.SHOPIFY_KEY)
+    """Generate a full mock dataset across every source, then build all facts.
+
+    This simulates being integrated with all the relevant APIs: each source is
+    written as raw parquet, then the fact tables are built from them.
+    """
+    catalog = mock_source.products()
+    lines = mock_source.shopify_line_items(catalog)
+
+    # Raw per-source (as if pulled from each API)
+    storage.write_df(catalog, config.SHOPIFY_PRODUCTS_KEY)
+    storage.write_df(lines, config.SHOPIFY_LINEITEMS_KEY)
+    storage.write_df(mock_source.shopify_orders_from_lines(lines), config.SHOPIFY_KEY)
+    storage.write_df(mock_source.shopify_inventory(catalog), config.SHOPIFY_INVENTORY_KEY)
+    storage.write_df(mock_source.shopify_returns(lines), config.SHOPIFY_RETURNS_KEY)
     storage.write_df(mock_source.ga4_data(), config.GA4_KEY)
+    storage.write_df(mock_source.ga4_items(catalog), config.GA4_ITEMS_KEY)
     storage.write_df(mock_source.meta_data(), config.META_KEY)
     storage.write_df(mock_source.google_ads_data(), config.GOOGLE_KEY)
+    storage.write_df(mock_source.microsoft_ads_data(), config.MICROSOFT_KEY)
+    storage.write_df(mock_source.tiktok_ads_data(), config.TIKTOK_KEY)
+    storage.write_df(mock_source.klaviyo_data(), config.KLAVIYO_KEY)
+    storage.write_df(mock_source.search_console_data(), config.GSC_KEY)
     storage.write_df(mock_source.targets(), config.TARGETS_KEY)
-    return build_fact.build()
+
+    # Build all fact tables from the raw parquet
+    return build_fact.build_all()
 
 
 def sync_shopify(store: str, token: str) -> int:
