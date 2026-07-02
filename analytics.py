@@ -122,7 +122,7 @@ def apply_filters(fact, date_from, date_to, filters: dict | None = None) -> pd.D
     m = (fact["date"] >= pd.Timestamp(date_from)) & (fact["date"] <= pd.Timestamp(date_to))
     df = fact[m]
     for dim, values in (filters or {}).items():
-        if values:
+        if values and dim in df.columns:  # ignore filters that don't apply to this frame
             df = df[df[dim].isin(values)]
     return df
 

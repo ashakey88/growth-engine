@@ -73,10 +73,16 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-chil
 .pill.down { background:#FEE2E2; color:#B91C1C; }
 .pill.neutral { background:#F1F5F9; color:#64748B; }
 
-/* Tabs + tables */
-.stTabs [data-baseweb="tab-list"] { gap:4px; border-bottom:1px solid #E4E8EF; }
-.stTabs [data-baseweb="tab"] { font-weight:600; color:#64748B; }
+/* Sidebar section label */
+.nav-section { font-size:10px; font-weight:700; letter-spacing:0.14em; color:#94A3B8;
+  text-transform:uppercase; margin:14px 0 4px; }
+
+/* Tabs — spaced out so they read as tabs */
+.stTabs [data-baseweb="tab-list"] { gap:28px; border-bottom:1px solid #E4E8EF; }
+.stTabs [data-baseweb="tab"] { padding:10px 2px 12px; font-size:15px; font-weight:600; color:#64748B; }
+.stTabs [data-baseweb="tab"]:hover { color:#2563EB; }
 .stTabs [aria-selected="true"] { color:#2563EB; }
+.stTabs [data-baseweb="tab-highlight"] { background:#2563EB; height:2px; }
 [data-testid="stDataFrame"] { border:1px solid #E4E8EF; border-radius:10px; }
 .ml-footer { color:#94A3B8; font-size:12px; text-align:center; margin-top:40px; padding-top:16px; border-top:1px solid #E4E8EF; }
 </style>
@@ -100,6 +106,22 @@ SECTIONS = {
 PERIOD_PAGES = {"eCommerce", "Profitability", "Customers", "Product", "Acquisition",
                 "Forecast", "Order Insight", "Benchmarks", "Data Table",
                 "Exec Digest", "AI Analyst"}
+
+# Filters relevant to each report (not the same set everywhere).
+PAGE_FILTERS = {
+    "eCommerce": ["marketing_channel_group", "marketing_channel", "paid_ad_platform", "geo_region", "device"],
+    "Profitability": ["geo_region", "marketing_channel_group"],
+    "Acquisition": ["paid_ad_platform", "paid_campaign_type", "geo_region"],
+    "Forecast": ["geo_region"],
+    "Exec Digest": ["geo_region"],
+    "Benchmarks": ["geo_region"],
+    "AI Analyst": ["paid_ad_platform", "geo_region"],
+    "Data Table": ["marketing_channel_group", "marketing_channel", "paid_ad_platform",
+                   "geo_region", "geo_market", "device"],
+    "Product": ["category"],
+    "Order Insight": ["category"],
+    "Customers": [],
+}
 
 
 @st.cache_resource(show_spinner="Setting up demo data…")
@@ -195,6 +217,24 @@ def _in_period(df, col="date"):
     return df[m]
 
 
+def _filter_options(dim):
+    """Options for a per-report filter, from whichever table owns that dimension."""
+    if dim == "category":
+        fp = get_product_fact()
+        return sorted(fp["category"].dropna().unique()) if fp is not None and "category" in fp else []
+    if dim in fact.columns:
+        return sorted([v for v in fact[dim].dropna().unique() if v != sem.NA])
+    return []
+
+
+def _filt(df, filters):
+    """Apply categorical filters to whichever columns the frame actually has."""
+    for k, v in (filters or {}).items():
+        if v and k in df.columns:
+            df = df[df[k].isin(v)]
+    return df
+
+
 ICONS = {
     "Reports": "📊", "Analysis": "🔬", "Intelligence": "✨", "Utility": "⚙️",
     "eCommerce": "🛒", "Profitability": "💷", "Customers": "👥", "Product": "📦",
@@ -275,10 +315,12 @@ with st.sidebar:
     st.markdown('<div class="ml-eyebrow">Malleson Labs</div>'
                 '<div class="ml-brand">The Growth Engine</div>', unsafe_allow_html=True)
     st.markdown("---")
-    section = st.radio("Section", list(SECTIONS.keys()),
-                       format_func=lambda s: f"{ICONS.get(s, '')}  {s}",
-                       label_visibility="collapsed")
-    st.caption(section.upper())
+    # Section = a dropdown (the "workspace"); pages = the menu below it. Two
+    # different controls so the hierarchy reads clearly.
+    section = st.selectbox("Workspace", list(SECTIONS.keys()),
+                           format_func=lambda s: f"{ICONS.get(s, '')}  {s}",
+                           label_visibility="collapsed")
+    st.markdown(f'<div class="nav-section">{section}</div>', unsafe_allow_html=True)
     page = st.radio(section, SECTIONS[section],
                     format_func=lambda p: f"{ICONS.get(p, '•')}  {p}",
                     label_visibility="collapsed")
@@ -305,16 +347,18 @@ if page in PERIOD_PAGES:
                               help="The reporting window, relative to the latest data.")
         comparison = st.selectbox("⚖️ Compare against", ["vs Last Year", "vs Prior Period"],
                                   help="What every % change is measured against.")
-        fkeys = {dim: f"flt_{dim}" for dim in FILTER_DIMS}
+        spec = PAGE_FILTERS.get(page, [])
+        fkeys = {dim: f"flt_{page}_{dim}" for dim in spec}  # per-page keys → independent
         active = sum(len(st.session_state.get(k, [])) for k in fkeys.values())
         filters = {}
-        with st.expander(f"🔎 Filters{f'  ·  {active} active' if active else ''}",
-                         expanded=bool(active)):
-            for dim in FILTER_DIMS:
-                opts = sorted([v for v in fact[dim].dropna().unique() if v != sem.NA])
-                sel = st.multiselect(sem.nice(dim), opts, key=fkeys[dim])
-                if sel:
-                    filters[dim] = sel
+        if spec:
+            with st.expander(f"🔎 Filters{f'  ·  {active} active' if active else ''}",
+                             expanded=bool(active)):
+                for dim in spec:
+                    opts = _filter_options(dim)
+                    sel = st.multiselect(sem.nice(dim), opts, key=fkeys[dim])
+                    if sel:
+                        filters[dim] = sel
     cur = analytics.resolve_period(period, ref)
     cmp = analytics.ly_range(*cur) if comparison == "vs Last Year" else analytics.prior_period(*cur)
     cmp_label = "LY" if comparison == "vs Last Year" else "Prior"
@@ -727,7 +771,7 @@ def page_product():
     if fp is None or fp.empty:
         _empty("No product data.")
         return
-    p = _in_period(fp)
+    p = _filt(_in_period(fp), filters)
     if p.empty:
         _empty()
         return
@@ -739,62 +783,84 @@ def page_product():
         discounts=("discounts", "sum"), gross_profit=("gross_profit", "sum"),
         views=("product_views", "sum"), atc=("product_add_to_carts", "sum"),
         on_hand=("on_hand", "last"), returned=("returned_units", "sum"),
+        refund=("refund_amount", "sum"),
     ).reset_index().fillna(0)
-    days = max(1, (cur[1] - cur[0]).days + 1)
+    weeks = max(1.0, ((cur[1] - cur[0]).days + 1) / 7)
+
+    def _asp(d):
+        return d["revenue"] / d["units"].replace(0, np.nan)
 
     t1, t2, t3, t4 = st.tabs(["Sales & Margin", "Funnel", "Stock", "Returns"])
     with t1:
-        cat = agg.groupby("category").agg(revenue=("revenue", "sum"),
-            gross_profit=("gross_profit", "sum"), units=("units", "sum")).reset_index()
-        cat["margin"] = cat["gross_profit"] / cat["revenue"]
-        st.bar_chart(cat.set_index("category"), y="revenue", height=260)
-        top = agg.sort_values("revenue", ascending=False).head(15).copy()
-        top["margin"] = (top["gross_profit"] / top["revenue"] * 100).round(1)
-        top["discount depth"] = (top["discounts"] / top["gross_sales"] * 100).round(1)
-        show = top[["product_title", "category", "units", "revenue", "gross_profit", "margin", "discount depth"]]
-        show.columns = ["Product", "Category", "Units", "Revenue", "Gross Profit", "Margin %", "Disc %"]
-        show["Revenue"] = show["Revenue"].map(money)
-        show["Gross Profit"] = show["Gross Profit"].map(money)
-        show["Units"] = show["Units"].map(num)
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        tot = agg[["revenue", "units", "gross_sales", "discounts", "gross_profit"]].sum()
+        metrics_row([
+            ("Revenue", money(tot["revenue"]), None),
+            ("Units", num(tot["units"]), None),
+            ("ASP", money(tot["revenue"] / tot["units"] if tot["units"] else 0), "Average selling price = Revenue ÷ Units"),
+            ("Gross margin", pctv(tot["gross_profit"] / tot["revenue"] if tot["revenue"] else 0), None),
+            ("Discount %", pctv(tot["discounts"] / tot["gross_sales"] if tot["gross_sales"] else 0), "Discounts ÷ gross sales"),
+        ])
+        cat = agg.groupby("category").agg(revenue=("revenue", "sum"), units=("units", "sum"),
+            gross_sales=("gross_sales", "sum"), discounts=("discounts", "sum"),
+            gross_profit=("gross_profit", "sum")).reset_index()
+        st.bar_chart(cat.set_index("category"), y="revenue", height=240)
+        cat["ASP"] = (cat["revenue"] / cat["units"]).map(money)
+        cat["Disc %"] = (cat["discounts"] / cat["gross_sales"] * 100).round(1)
+        cat["GM %"] = (cat["gross_profit"] / cat["revenue"] * 100).round(1)
+        cat["Revenue"] = cat["revenue"].map(money)
+        cat["GM £"] = cat["gross_profit"].map(money)
+        cat["Units"] = cat["units"].map(num)
+        st.dataframe(cat[["category", "Revenue", "Units", "ASP", "Disc %", "GM %", "GM £"]]
+                     .rename(columns={"category": "Category"}), use_container_width=True, hide_index=True)
     with t2:
         f = agg.copy()
-        f["atc_rate"] = (f["atc"] / f["views"] * 100).round(1)
-        f["cvr"] = (f["units"] / f["views"] * 100).round(1)
+        f["ATC %"] = (f["atc"] / f["views"].replace(0, np.nan) * 100).round(1)
+        f["Conversion %"] = (f["units"] / f["views"].replace(0, np.nan) * 100).round(1)
         f = f.sort_values("views", ascending=False).head(20)
-        show = f[["product_title", "views", "atc", "atc_rate", "units", "cvr"]]
-        show.columns = ["Product", "Views", "Add to Carts", "ATC %", "Units Sold", "CVR %"]
-        for col in ["Views", "Add to Carts", "Units Sold"]:
-            show[col] = show[col].map(num)
+        show = f[["product_title", "views", "atc", "ATC %", "units", "Conversion %"]].copy()
+        show.columns = ["Product", "Views", "Add to Carts", "ATC %", "Units", "Conversion %"]
+        for c in ["Views", "Add to Carts", "Units"]:
+            show[c] = show[c].map(num)
+        st.caption("Product-level funnel: views → add-to-cart rate → conversion.")
         st.dataframe(show, use_container_width=True, hide_index=True)
     with t3:
         s = agg.copy()
-        s["per_day"] = s["units"] / days
-        s["days_cover"] = (s["on_hand"] / s["per_day"].replace(0, np.nan)).round(0)
-        low = s[s["days_cover"] <= 21].sort_values("days_cover")
-        st.caption("Products with ≤ 21 days of cover at the current sell-through rate.")
-        show = low[["product_title", "category", "on_hand", "days_cover"]].head(20)
-        show.columns = ["Product", "Category", "On hand", "Days cover"]
+        s["weeks_cover"] = (s["on_hand"] / (s["units"] / weeks).replace(0, np.nan)).round(1)
+        avail = (s["on_hand"] > 0).mean()
+        metrics_row([
+            ("In-stock availability", pctv(avail), "Share of products with stock on hand"),
+            ("Avg weeks cover", ratio(s["weeks_cover"].replace([np.inf], np.nan).mean()), "On hand ÷ weekly sell-through"),
+            ("Out of stock", num((s["on_hand"] <= 0).sum()), None),
+        ])
+        low = s[(s["weeks_cover"] <= 3) | (s["on_hand"] <= 0)].sort_values("weeks_cover")
+        st.caption("Products with ≤ 3 weeks cover (or out of stock) at the current rate.")
+        show = low[["product_title", "category", "on_hand", "weeks_cover"]].head(20).copy()
+        show.columns = ["Product", "Category", "On hand", "Weeks cover"]
         show["On hand"] = show["On hand"].map(num)
         st.dataframe(show, use_container_width=True, hide_index=True)
         if low.empty:
             st.success("No products low on stock. 🎉")
     with t4:
         r = agg.copy()
-        r["return_rate"] = (r["returned"] / r["units"].replace(0, np.nan) * 100).round(1)
-        worst = r.sort_values("return_rate", ascending=False).head(15)
-        show = worst[["product_title", "category", "units", "returned", "return_rate"]]
+        tot_u, tot_r, tot_rev, tot_ref = r["units"].sum(), r["returned"].sum(), r["revenue"].sum(), r["refund"].sum()
+        metrics_row([
+            ("Return rate (items)", pctv(tot_r / tot_u if tot_u else 0), "Returned units ÷ units sold"),
+            ("Return rate (value)", pctv(tot_ref / tot_rev if tot_rev else 0), "Refund value ÷ revenue"),
+            ("Refunds", money(tot_ref), None),
+        ])
+        r["Return %"] = (r["returned"] / r["units"].replace(0, np.nan) * 100).round(1)
+        worst = r[r["returned"] > 0].sort_values("Return %", ascending=False).head(15)
+        show = worst[["product_title", "category", "units", "returned", "Return %"]].copy()
         show.columns = ["Product", "Category", "Units", "Returned", "Return %"]
         show["Units"] = show["Units"].map(num)
         show["Returned"] = show["Returned"].map(num)
         st.dataframe(show, use_container_width=True, hide_index=True)
         rets = get_returns()
         if rets is not None and not rets.empty:
-            rr = _in_period(rets)
-            if not rr.empty:
-                reasons = rr.groupby("reason").size().sort_values(ascending=False)
+            rr = _filt(_in_period(rets), filters)
+            if not rr.empty and "reason" in rr:
                 st.markdown("**Return reasons**")
-                st.bar_chart(reasons, height=240)
+                st.bar_chart(rr.groupby("reason").size().sort_values(ascending=False), height=240)
 
 
 # ── Acquisition / Paid Media ─────────────────────────────────────
@@ -888,6 +954,7 @@ def page_order_insight():
         _empty("No line-item data.")
         return
     l = li[(li["created_at"] >= pd.Timestamp(cur[0])) & (li["created_at"] <= pd.Timestamp(cur[1]))]
+    l = _filt(l, filters)
     if l.empty:
         _empty()
         return
