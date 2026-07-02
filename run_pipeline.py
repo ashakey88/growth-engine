@@ -39,6 +39,7 @@ def ingest_mock() -> None:
     storage.write_df(mock_source.tiktok_ads_data(), config.TIKTOK_KEY)
     storage.write_df(mock_source.klaviyo_data(), config.KLAVIYO_KEY)
     storage.write_df(mock_source.search_console_data(), config.GSC_KEY)
+    storage.write_df(mock_source.order_bank(catalog), config.ORDERBANK_KEY)
     storage.write_df(mock_source.targets(), config.TARGETS_KEY)
     print("ingest: raw parquet written for all sources.")
 

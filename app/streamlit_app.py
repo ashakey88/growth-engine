@@ -98,13 +98,14 @@ KPI_GROUPS = {
 ALL_KPIS = [m for g in KPI_GROUPS.values() for m in g]
 
 SECTIONS = {
-    "Reports": ["eCommerce", "Profitability", "Customers", "Product", "Acquisition", "Forecast"],
+    "Reports": ["eCommerce", "Profitability", "Customers", "Product", "Acquisition",
+                "Forecast", "Orderbank"],
     "Analysis": ["Order Insight"],
     "Intelligence": ["Exec Digest", "AI Analyst", "Benchmarks", "Data Trust"],
     "Utility": ["Data Table", "Connect sources", "Targets"],
 }
 PERIOD_PAGES = {"eCommerce", "Profitability", "Customers", "Product", "Acquisition",
-                "Forecast", "Order Insight", "Benchmarks", "Data Table",
+                "Forecast", "Orderbank", "Order Insight", "Benchmarks", "Data Table",
                 "Exec Digest", "AI Analyst"}
 
 # Filters relevant to each report (not the same set everywhere).
@@ -121,6 +122,7 @@ PAGE_FILTERS = {
     "Product": ["category"],
     "Order Insight": ["category"],
     "Customers": [],
+    "Orderbank": [],
 }
 
 
@@ -178,13 +180,18 @@ def get_returns():
     return analytics._load_dated(config.SHOPIFY_RETURNS_KEY)
 
 
+@st.cache_resource
+def get_orderbank():
+    return analytics.load_orderbank()
+
+
 def conn_state() -> dict:
     return storage.read_json(config.CONNECTIONS_KEY) or {"active_source": "mock", "shopify_store": None}
 
 
 def reset_caches():
     for fn in (get_fact, get_product_fact, get_email_fact, get_seo_fact,
-               get_orders, get_line_items, get_returns, _bootstrap):
+               get_orders, get_line_items, get_returns, get_orderbank, _bootstrap):
         fn.clear()
 
 
@@ -238,7 +245,7 @@ def _filt(df, filters):
 ICONS = {
     "Reports": "📊", "Analysis": "🔬", "Intelligence": "✨", "Utility": "⚙️",
     "eCommerce": "🛒", "Profitability": "💷", "Customers": "👥", "Product": "📦",
-    "Acquisition": "📣", "Forecast": "🎯", "Order Insight": "🧾", "Exec Digest": "📌",
+    "Acquisition": "📣", "Forecast": "🎯", "Orderbank": "📥", "Order Insight": "🧾", "Exec Digest": "📌",
     "AI Analyst": "🤖", "Benchmarks": "📐", "Data Trust": "🛡️", "Data Table": "🔎",
     "Connect sources": "🔌", "Targets": "🎚️",
 }
@@ -616,22 +623,31 @@ def page_profitability():
     _kpi_grid(["revenue", "gross_profit", "gross_margin_pct", "contribution"])
     _kpi_grid(["contribution_margin", "spend", "mer", "discount_rate"])
 
-    st.markdown("#### Contribution waterfall")
+    st.markdown("#### Finance waterfall")
     cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
     t = analytics.totals(cur_df, ["gross_sales", "discounts", "revenue", "cogs",
                                   "gross_profit", "spend"])
-    contribution = t["gross_profit"] - t["spend"]
-    steps = [("Gross Sales", t["gross_sales"]), ("Discounts", -t["discounts"]),
-             ("Net Revenue", t["revenue"]), ("COGS", -t["cogs"]),
-             ("Gross Profit", t["gross_profit"]), ("Marketing", -t["spend"]),
+    # cancellations + returns value from the raw returns feed (period-scoped)
+    cancellations = returns_val = 0.0
+    rets = get_returns()
+    if rets is not None and not rets.empty and "kind" in rets.columns:
+        rp = _in_period(rets)
+        cancellations = rp.loc[rp["kind"] == "cancellation", "value"].sum()
+        returns_val = rp.loc[rp["kind"] == "return", "value"].sum()
+    net = t["revenue"] - cancellations - returns_val
+    gp_after = net - t["cogs"]
+    contribution = gp_after - t["spend"]
+    steps = [("Gross Sales", t["gross_sales"]), ("Less: Discounts", -t["discounts"]),
+             ("Less: Cancellations", -cancellations), ("Less: Returns", -returns_val),
+             ("Net Revenue", net), ("Less: COGS", -t["cogs"]),
+             ("Gross Profit", gp_after), ("Less: Marketing", -t["spend"]),
              ("Contribution (CM2)", contribution)]
-    wf = pd.DataFrame({"Line": [s[0] for s in steps],
-                       "£": [f"£{s[1]:,.0f}" for s in steps]})
+    wf = pd.DataFrame({"Line": [s[0] for s in steps], "£": [money(s[1]) for s in steps]})
     st.table(wf)
-    st.caption("Contribution = Gross Profit − Marketing spend. Fulfilment, payment "
-               "fees and returns (CM3) come once those data sources are connected.")
+    st.caption("Modelled on the trading suite's finance waterfall. Fulfilment and "
+               "payment fees (CM3) come once those feeds are connected.")
 
-    st.markdown("#### Contribution & MER over time")
+    st.markdown("#### Contribution over time")
     tr = analytics.trend(cur_df, "contribution", "W").set_index("period")
     st.line_chart(tr, y="contribution", height=280)
 
@@ -923,25 +939,72 @@ def page_acquisition():
             st.dataframe(q, use_container_width=True, hide_index=True)
 
 
-# ── Forecast & Pacing ────────────────────────────────────────────
+# ── Forecast & Pacing (Perf vs Budget + run-rate) ────────────────
 def page_forecast():
     _report_top("Forecast & Pacing", "🎯")
-    st.caption("Pacing the current month vs target (independent of the period selector).")
-    month_start = ref.replace(day=1)
-    dim = calendar.monthrange(ref.year, ref.month)[1]
-    elapsed = ref.day
-    mtd = analytics.apply_filters(fact, month_start, ref, filters)
-    rows = []
-    for m in ["revenue", "orders", "spend", "visits"]:
-        actual = analytics.totals(mtd, [m])[m]
-        proj = actual / elapsed * dim if elapsed else 0
-        tgt = analytics.target_total(targets, month_start, month_start.replace(day=dim), m)
-        rows.append({"Metric": sem.nice(m), "MTD actual": sem.fmt(m, actual),
-                     "Projected month": sem.fmt(m, proj),
-                     "Month target": sem.fmt(m, tgt) if tgt else "—",
-                     "Projected vs target": fmt_pct((proj / tgt - 1) * 100) if tgt else "—"})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    st.caption(f"Day {elapsed} of {dim}. Projection is a simple linear run-rate.")
+    t1, t2 = st.tabs(["Perf vs Budget", "Run-rate"])
+    budget_metrics = ["revenue", "orders", "gross_profit", "spend", "visits"]
+    cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    ly = analytics.ly_range(*cur)
+    ly_df = analytics.apply_filters(fact, ly[0], ly[1], filters)
+    with t1:
+        st.caption(f"Selected period ({cur[0]} → {cur[1]}) vs budget and last year.")
+        rows = []
+        for m in budget_metrics:
+            actual = analytics.totals(cur_df, [m])[m]
+            budget = analytics.target_total(targets, cur[0], cur[1], m)
+            lyv = analytics.totals(ly_df, [m])[m]
+            rows.append({
+                "Metric": sem.nice(m), "Actual": sem.fmt(m, actual),
+                "Budget": sem.fmt(m, budget) if budget else "—",
+                "v Budget": fmt_pct((actual / budget - 1) * 100) if budget else "—",
+                "LY": sem.fmt(m, lyv),
+                "v LY": fmt_pct((actual / lyv - 1) * 100) if lyv else "—",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    with t2:
+        st.caption("Pacing the current month to a linear run-rate.")
+        month_start = ref.replace(day=1)
+        dim = calendar.monthrange(ref.year, ref.month)[1]
+        elapsed = ref.day
+        mtd = analytics.apply_filters(fact, month_start, ref, filters)
+        rows = []
+        for m in ["revenue", "orders", "spend", "gross_profit"]:
+            actual = analytics.totals(mtd, [m])[m]
+            proj = actual / elapsed * dim if elapsed else 0
+            tgt = analytics.target_total(targets, month_start, month_start.replace(day=dim), m)
+            rows.append({"Metric": sem.nice(m), "MTD actual": sem.fmt(m, actual),
+                         "Projected month": sem.fmt(m, proj),
+                         "Month budget": sem.fmt(m, tgt) if tgt else "—",
+                         "Projected vs budget": fmt_pct((proj / tgt - 1) * 100) if tgt else "—"})
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.caption(f"Day {elapsed} of {dim}. Linear run-rate projection.")
+
+
+# ── Orderbank ────────────────────────────────────────────────────
+def page_orderbank():
+    _report_top("Orderbank", "📥")
+    st.caption("Open sales orders taken but not yet invoiced.")
+    ob = get_orderbank()
+    if ob is None or ob.empty:
+        _empty("No orderbank data.")
+        return
+    latest = ob["date"].max()
+    snap = ob[ob["date"] == latest]
+    metrics_row([
+        ("Open value", money(snap["open_value"].sum()), "Value of orders not yet invoiced"),
+        ("Open orders", num(snap["open_orders"].sum()), None),
+        ("Open items", num(snap["open_items"].sum()), None),
+    ])
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**By category**")
+        st.bar_chart(snap.groupby("category_l1")["open_value"].sum(), height=240)
+    with c2:
+        st.markdown("**By warehouse**")
+        st.bar_chart(snap.groupby("warehouse")["open_value"].sum(), height=240)
+    st.markdown("**Open orderbank value — weekly trend**")
+    st.line_chart(ob.groupby("date")["open_value"].sum(), height=260)
 
 
 # ── Order Insight (Analysis) ─────────────────────────────────────
@@ -1066,6 +1129,7 @@ PAGES = {
     "eCommerce": page_report, "Profitability": page_profitability,
     "Customers": page_customers, "Product": page_product,
     "Acquisition": page_acquisition, "Forecast": page_forecast,
+    "Orderbank": page_orderbank,
     "Order Insight": page_order_insight, "Exec Digest": page_exec_digest,
     "AI Analyst": page_ai_analyst, "Benchmarks": page_benchmarks,
     "Data Trust": page_data_trust, "Data Table": page_data_table,

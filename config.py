@@ -30,11 +30,13 @@ MICROSOFT_KEY = "microsoft/microsoft_data.parquet"
 TIKTOK_KEY = "tiktok/tiktok_data.parquet"
 KLAVIYO_KEY = "klaviyo/klaviyo_data.parquet"
 GSC_KEY = "gsc/gsc_data.parquet"
+ORDERBANK_KEY = "shopify/orderbank.parquet"
 # Built fact tables (one per grain/domain)
 FACT_KEY = "fact/fact.parquet"                          # marketing (stacked)
 FACT_PRODUCT_KEY = "fact/fact_product.parquet"          # date x product x geo
 FACT_EMAIL_KEY = "fact/fact_email.parquet"              # date x campaign/flow
 FACT_SEO_KEY = "fact/fact_seo.parquet"                  # date x query
+FACT_ORDERBANK_KEY = "fact/fact_orderbank.parquet"      # open orders not invoiced
 TARGETS_KEY = "targets/targets_ecommerce.parquet"
 CONNECTIONS_KEY = "connections.json"
 

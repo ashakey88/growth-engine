@@ -55,6 +55,10 @@ def load_seo_fact():
     return _load_dated(config.FACT_SEO_KEY)
 
 
+def load_orderbank():
+    return _load_dated(config.FACT_ORDERBANK_KEY)
+
+
 def date_bounds(fact: pd.DataFrame):
     return fact["date"].min().date(), fact["date"].max().date()
 

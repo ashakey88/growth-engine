@@ -206,6 +206,7 @@ targets:
     target_visits: visits
     target_orders: orders
     target_revenue: revenue
+    target_gross_profit: gross_profit
     target_engaged_visits: engaged_visits
     target_add_to_carts: add_to_carts
     target_checkouts: checkouts

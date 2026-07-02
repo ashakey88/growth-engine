@@ -240,7 +240,9 @@ def build_product() -> int:
         return 0
     lines = lines.copy()
     lines["date"] = pd.to_datetime(lines["created_at"]).dt.strftime("%Y-%m-%d")
-    base = lines.groupby(["date", "product_id", "product_title", "category"]).agg(
+    grp = ["date", "product_id", "product_title", "category_l1", "category", "style"]
+    grp = [c for c in grp if c in lines.columns]
+    base = lines.groupby(grp).agg(
         units=("quantity", "sum"), revenue=("net_sales", "sum"),
         gross_sales=("gross_sales", "sum"), discounts=("discounts", "sum"),
         cogs=("cogs", "sum"),
@@ -256,19 +258,34 @@ def build_product() -> int:
 
     inv = storage.read_df(config.SHOPIFY_INVENTORY_KEY)
     if inv is not None and not inv.empty:
-        iv = inv.groupby(["date", "product_id"])["on_hand"].mean().reset_index()
+        iv = inv.copy()
+        iv["stock_value"] = iv["on_hand"] * iv.get("stock_value_per_unit", 0)
+        agg = {"on_hand": ("on_hand", "sum"), "stock_value": ("stock_value", "sum")}
+        if "in_transit" in iv.columns:
+            agg["in_transit"] = ("in_transit", "sum")
+        iv = iv.groupby(["date", "product_id"]).agg(**agg).reset_index()
         base = base.merge(iv, on=["date", "product_id"], how="left")
 
     rets = storage.read_df(config.SHOPIFY_RETURNS_KEY)
-    if rets is not None and not rets.empty:
-        rt = rets.groupby(["date", "product_id"]).agg(
+    if rets is not None and not rets.empty and "kind" in rets.columns:
+        only = rets[rets["kind"] == "return"]
+        rt = only.groupby(["date", "product_id"]).agg(
             returned_units=("quantity", "sum"),
-            refund_amount=("refund_amount", "sum")).reset_index()
+            refund_amount=("value", "sum")).reset_index()
         base = base.merge(rt, on=["date", "product_id"], how="left")
 
     storage.write_df(base, config.FACT_PRODUCT_KEY)
     print(f"fact_product rows: {len(base)}")
     return len(base)
+
+
+def build_orderbank() -> int:
+    df = storage.read_df(config.ORDERBANK_KEY)
+    if df is None or df.empty:
+        return 0
+    storage.write_df(df, config.FACT_ORDERBANK_KEY)
+    print(f"fact_orderbank rows: {len(df)}")
+    return len(df)
 
 
 # ── Email fact (Klaviyo) and SEO fact (Search Console): light pass-through ──
@@ -295,6 +312,7 @@ def build_all() -> int:
     build_product()
     build_email()
     build_seo()
+    build_orderbank()
     return n
 
 

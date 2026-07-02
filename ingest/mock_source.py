@@ -144,6 +144,7 @@ def targets(days: int = 450, seed: int = 99) -> pd.DataFrame:
             "target_visits": random.randint(6000, 9000),
             "target_orders": random.randint(120, 200),
             "target_revenue": round(random.uniform(11000, 17000), 2),
+            "target_gross_profit": round(random.uniform(6500, 10000), 2),
             "target_engaged_visits": random.randint(4000, 6500),
             "target_add_to_carts": random.randint(700, 1200),
             "target_checkouts": random.randint(300, 600),
@@ -152,24 +153,31 @@ def targets(days: int = 450, seed: int = 99) -> pd.DataFrame:
 
 
 # ── Product catalog + line items (Shopify) ───────────────────────
+# (category_l2, price_lo, price_hi, category_l1)
 CATEGORIES = [
-    ("Helmets", 280, 480), ("Apparel", 45, 120), ("Accessories", 15, 60),
-    ("Bags", 60, 140), ("Electronics", 90, 260), ("Spares", 8, 40),
+    ("Helmets", 280, 480, "Moto"), ("Apparel", 45, 120, "Other"),
+    ("Accessories", 15, 60, "Moto"), ("Bags", 60, 140, "Other"),
+    ("Electronics", 90, 260, "Snow"), ("Spares", 8, 40, "Other"),
 ]
+WAREHOUSES = ["UK", "EU", "US"]
+SIZES = ["S", "M", "L", "XL"]
 
 
 def products(seed: int = 5) -> pd.DataFrame:
-    """A small catalog: product_id, title, category, price, unit_cost."""
+    """Catalog with a light hierarchy: L1 (Moto/Snow/Other) > category (L2) > style."""
     random.seed(seed)
     rows, pid = [], 0
-    for cat, lo, hi in CATEGORIES:
+    for cat, lo, hi, l1 in CATEGORIES:
         for i in range(1, 8):  # ~7 products per category
             pid += 1
             price = round(random.uniform(lo, hi), 2)
             rows.append({
                 "product_id": f"P{pid:04d}",
                 "product_title": f"{cat[:-1] if cat.endswith('s') else cat} {i}",
+                "category_l1": l1,
                 "category": cat,
+                "style": f"{cat[:3].upper()}{i}",
+                "sized": cat == "Helmets" or cat == "Apparel",
                 "price": price,
                 "unit_cost": round(price * random.uniform(0.38, 0.55), 2),
             })
@@ -194,10 +202,13 @@ def shopify_line_items(catalog: pd.DataFrame, days: int = 450, seed: int = 42) -
                 disc_rate = random.choice([0, 0, 0, 0.1, 0.15, 0.2])
                 gross = round(p["price"] * qty, 2)
                 disc = round(gross * disc_rate, 2)
+                size = random.choice(SIZES) if p.get("sized") else "One Size"
                 rows.append({
                     "order_id": oid, "created_at": created, "customer_id": customer,
                     "country": country, "product_id": p["product_id"],
-                    "product_title": p["product_title"], "category": p["category"],
+                    "product_title": p["product_title"], "category_l1": p["category_l1"],
+                    "category": p["category"], "style": p["style"], "size": size,
+                    "sku": f"{p['product_id']}-{size.replace(' ', '')}",
                     "quantity": qty, "unit_price": p["price"],
                     "gross_sales": gross, "discounts": disc,
                     "net_sales": round(gross - disc, 2),
@@ -221,18 +232,24 @@ def shopify_orders_from_lines(lines: pd.DataFrame) -> pd.DataFrame:
 
 
 def shopify_inventory(catalog: pd.DataFrame, days: int = 450, seed: int = 8) -> pd.DataFrame:
-    """Daily on-hand stock per product (random walk with occasional restocks)."""
+    """Daily on-hand + in-transit stock per product per warehouse (random walk),
+    with a stock value per unit for stock-value reporting."""
     random.seed(seed)
+    cost = {r["product_id"]: r["unit_cost"] for _, r in catalog.iterrows()}
+    stock = {(r["product_id"], w): random.randint(60, 500)
+             for _, r in catalog.iterrows() for w in WAREHOUSES}
     rows = []
-    stock = {r["product_id"]: random.randint(200, 1500) for _, r in catalog.iterrows()}
     for day in _days(days):
-        for pid in stock:
-            stock[pid] -= random.randint(0, 25)
-            if stock[pid] < 60 and random.random() < 0.3:
-                stock[pid] += random.randint(300, 800)  # restock
-            stock[pid] = max(0, stock[pid])
-            rows.append({"date": day.strftime("%Y-%m-%d"), "product_id": pid,
-                         "on_hand": stock[pid]})
+        d = day.strftime("%Y-%m-%d")
+        for (pid, w), on_hand in stock.items():
+            on_hand -= random.randint(0, 10)
+            if on_hand < 30 and random.random() < 0.3:
+                on_hand += random.randint(100, 300)
+            stock[(pid, w)] = max(0, on_hand)
+            rows.append({"date": d, "product_id": pid, "warehouse": w,
+                         "on_hand": stock[(pid, w)],
+                         "in_transit": random.choice([0, 0, 0, 50, 120, 250]),
+                         "stock_value_per_unit": cost[pid]})
     return pd.DataFrame(rows)
 
 
@@ -241,20 +258,40 @@ RETURN_REASONS = ["Too small", "Too large", "Not as described", "Faulty",
 
 
 def shopify_returns(lines: pd.DataFrame, seed: int = 11) -> pd.DataFrame:
-    """~10% of line items returned, with a reason and refund amount."""
+    """~14% of line items are a return, cancellation or exchange, each with a
+    reason and value (kind lets the finance waterfall separate them)."""
     random.seed(seed)
-    sample = lines.sample(frac=0.10, random_state=seed)
+    sample = lines.sample(frac=0.14, random_state=seed)
     rows = []
     for _, r in sample.iterrows():
+        kind = random.choices(["return", "cancellation", "exchange"], weights=[0.6, 0.25, 0.15])[0]
         rows.append({
             "return_id": f"R{random.randint(100000, 999999)}",
             "order_id": r["order_id"],
             "date": (pd.to_datetime(r["created_at"]) + pd.Timedelta(days=random.randint(3, 20))
                      ).strftime("%Y-%m-%d"),
             "product_id": r["product_id"], "category": r["category"],
-            "country": r["country"], "quantity": r["quantity"],
-            "refund_amount": r["net_sales"], "reason": random.choice(RETURN_REASONS),
+            "country": r["country"], "kind": kind, "quantity": r["quantity"],
+            "value": r["net_sales"], "reason": random.choice(RETURN_REASONS),
         })
+    return pd.DataFrame(rows)
+
+
+def order_bank(catalog: pd.DataFrame, weeks: int = 12, seed: int = 44) -> pd.DataFrame:
+    """Open orders taken but not yet invoiced, by category_l1 × warehouse × week
+    (for the Orderbank report's snapshot + weekly trend)."""
+    random.seed(seed)
+    l1s = sorted(catalog["category_l1"].unique())
+    rows = []
+    start = datetime.utcnow() - timedelta(weeks=weeks - 1)
+    for wk in range(weeks):
+        d = (start + timedelta(weeks=wk)).strftime("%Y-%m-%d")
+        for l1 in l1s:
+            for w in WAREHOUSES:
+                orders = random.randint(5, 60)
+                rows.append({"date": d, "category_l1": l1, "warehouse": w,
+                             "open_orders": orders, "open_items": orders * random.randint(1, 3),
+                             "open_value": round(orders * random.uniform(120, 340), 2)})
     return pd.DataFrame(rows)
 
 
