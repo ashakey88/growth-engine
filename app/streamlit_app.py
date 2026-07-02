@@ -72,6 +72,7 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-chil
 .pill.up { background:#DCFCE7; color:#15803D; }
 .pill.down { background:#FEE2E2; color:#B91C1C; }
 .pill.neutral { background:#F1F5F9; color:#64748B; }
+.spark-caption { font-size:10px; color:#94A3B8; text-align:right; margin-top:-4px; }
 
 /* Sidebar section label */
 .nav-section { font-size:10px; font-weight:700; letter-spacing:0.14em; color:#94A3B8;
@@ -294,7 +295,7 @@ def compact(m: str, value) -> str:
             return f"{sign}{pre}{v/1_000:.0f}k"
         if v >= 1_000:
             return f"{sign}{pre}{v/1_000:.1f}k"
-        return f"{sign}{pre}{v:,.0f}"
+        return sem.fmt(m, value)  # small values: respect the metric's own dp (e.g. cost-per-X)
     return sem.fmt(m, value)
 
 
@@ -395,7 +396,10 @@ def _pill(metric, pct, label):
     return f'<span class="pill {cls}">{arrow} {abs(pct):.0f}% {label}</span>'
 
 
-def _spark_chart(spark, metric):
+_TOOLTIP_NOUN = {"Daily": "Day", "Weekly": "Week", "Monthly": "Month"}
+
+
+def _spark_chart(spark, metric, freq_label):
     color = "#2563EB"
     grad = alt.Gradient(gradient="linear",
                         stops=[alt.GradientStop(color="#FFFFFF", offset=0),
@@ -404,12 +408,19 @@ def _spark_chart(spark, metric):
     base = alt.Chart(spark).encode(
         x=alt.X("period:T", axis=None),
         y=alt.Y(f"{metric}:Q", axis=None, scale=alt.Scale(zero=False)),
-        tooltip=[alt.Tooltip("period:T", title="Week"),
+        tooltip=[alt.Tooltip("period:T", title=_TOOLTIP_NOUN.get(freq_label, freq_label)),
                  alt.Tooltip(f"{metric}:Q", title=sem.nice(metric), format=",.0f")],
     )
     area = base.mark_area(color=grad, opacity=0.5)
     line = base.mark_line(color=color, strokeWidth=2.5)
     return (area + line).properties(height=56).configure_view(strokeWidth=0)
+
+
+def _spark_caption(start_ts, end_ts, freq):
+    label = analytics.FREQ_LABEL[freq]
+    cross_year = start_ts.year != end_ts.year
+    start_fmt = "%d %b %Y" if cross_year else "%d %b"
+    return f"{label} · {start_ts.strftime(start_fmt)} → {end_ts.strftime('%d %b %Y')}"
 
 
 def _kpi_card(row):
@@ -426,7 +437,10 @@ def _kpi_card(row):
             unsafe_allow_html=True)
         spark = analytics.sparkline(fact, m, cur[0], cur[1], filters)
         if len(spark) > 1:
-            st.altair_chart(_spark_chart(spark, m), use_container_width=True)
+            start_ts, end_ts, freq = analytics.spark_window(cur[0], cur[1])
+            st.altair_chart(_spark_chart(spark, m, analytics.FREQ_LABEL[freq]), use_container_width=True)
+            st.markdown(f'<div class="spark-caption">{_spark_caption(start_ts, end_ts, freq)}</div>',
+                       unsafe_allow_html=True)
 
 
 def render_trends():

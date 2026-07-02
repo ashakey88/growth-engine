@@ -195,22 +195,30 @@ def kpi_rows(fact, metrics, cur, cmp, targets, filters=None) -> list[dict]:
     return rows
 
 
+FREQ_LABEL = {"D": "Daily", "W": "Weekly", "M": "Monthly"}
+
+
+def spark_window(start, end) -> tuple[pd.Timestamp, pd.Timestamp, str]:
+    """Effective (start, end, freq) for a sparkline over the selected period.
+    Very short periods widen to a trailing 30 days (daily) so the trend stays
+    legible. Exposed separately so the UI can show matching time context."""
+    start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
+    span = (end_ts - start_ts).days + 1
+    if span < 10:
+        return end_ts - pd.Timedelta(days=29), end_ts, "D"
+    if span <= 45:
+        return start_ts, end_ts, "D"
+    if span <= 182:
+        return start_ts, end_ts, "W"
+    return start_ts, end_ts, "M"
+
+
 def sparkline(fact, metric, start, end, filters=None) -> pd.DataFrame:
-    """Series over the selected period, at auto-selected granularity. Very short
-    periods widen to a trailing 30 days (daily) so the trend stays legible.
+    """Series over the selected period, at auto-selected granularity.
     Fully defensive: a sparkline should never crash the card it sits in."""
     empty = pd.DataFrame({"period": [], metric: []})
     try:
-        start_ts, end_ts = pd.Timestamp(start), pd.Timestamp(end)
-        span = (end_ts - start_ts).days + 1
-        if span < 10:
-            start_ts, freq = end_ts - pd.Timedelta(days=29), "D"
-        elif span <= 45:
-            freq = "D"
-        elif span <= 182:
-            freq = "W"
-        else:
-            freq = "M"
+        start_ts, end_ts, freq = spark_window(start, end)
         df = apply_filters(fact, start_ts, end_ts, filters)
         if df.empty:
             return empty
