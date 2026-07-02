@@ -107,15 +107,15 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-chil
 """, unsafe_allow_html=True)
 
 KPI_GROUPS = {
-    "Business Summary": ["revenue", "visits", "orders", "conversion_rate", "aov"],
-    "Conversion Funnel": ["engagement_rate", "add_to_cart_rate", "checkout_rate",
-                         "checkout_completion_rate", "cart_abandonment_rate"],
+    "Overview Metrics": ["revenue", "visits", "orders", "conversion_rate", "aov"],
+    "Funnel Metrics": ["engagement_rate", "add_to_cart_rate", "checkout_rate",
+                      "checkout_completion_rate", "cart_abandonment_rate"],
     # Not shown on the eCommerce summary — it duplicates the dedicated Paid Media
     # report. Kept here so it still appears in the Trends metric picker below.
-    "Paid Funnel": ["spend", "roas", "cost_per_visit", "cost_per_add_to_cart",
+    "Paid Metrics": ["spend", "roas", "cost_per_visit", "cost_per_add_to_cart",
                     "cost_per_checkout", "cost_per_order"],
 }
-SUMMARY_GROUPS = ["Business Summary", "Conversion Funnel"]
+SUMMARY_GROUPS = ["Overview Metrics", "Funnel Metrics"]
 ALL_KPIS = [m for g in KPI_GROUPS.values() for m in g]
 
 SECTIONS = {
@@ -614,29 +614,59 @@ def _kpi_card(row):
                        unsafe_allow_html=True)
 
 
-def render_trends():
-    c1, c2 = st.columns(2)
-    metric = c1.selectbox("Metric", ALL_KPIS, index=ALL_KPIS.index("revenue"),
-                          format_func=sem.nice, key="tr_metric",
-                          help="Pick any KPI to chart this year vs last year.")
-    freq = c2.selectbox("Frequency", ["Weekly", "Daily", "Monthly"], key="tr_freq")
-    st.caption(metric_help(metric))
-    fmap = {"Daily": "D", "Weekly": "W", "Monthly": "M"}
-    cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
-    if cur_df.empty:
+# ── Trends: 4 independently-pickable charts sharing one time selector ──
+TREND_PERIODS = {
+    "Year to Date (Weekly)": ("Year to Date", "W"),
+    "Last Quarter (Weekly)": ("Last Quarter", "W"),
+    "Last 90 Days (Weekly)": ("Last 90 Days", "W"),
+    "Month to Date (Daily)": ("Month to Date", "D"),
+    "Last 30 Days (Daily)": ("Last 30 Days", "D"),
+    "Last Month (Daily)": ("Last Month", "D"),
+    "Last Week (Daily)": ("Last Week", "D"),
+    "Last 7 Days (Daily)": ("Last 7 Days", "D"),
+}
+TREND_DEFAULT = "Year to Date (Weekly)"
+
+
+def _trend_series(period_name, freq, metric):
+    """TY/LY trend for one metric, trimmed to whole periods only — a still-
+    open current week would otherwise show as a misleading low final bar."""
+    start, end = analytics.resolve_period(period_name, ref)
+    ly_start, ly_end = analytics.ly_range(start, end)
+    ty = analytics.trend(analytics.apply_filters(fact, start, end, filters), metric, freq).reset_index(drop=True)
+    lyt = analytics.trend(analytics.apply_filters(fact, ly_start, ly_end, filters), metric, freq).reset_index(drop=True)
+    if freq == "W" and len(ty) and (end - ty["period"].iloc[-1].date()).days + 1 < 7:
+        ty = ty.iloc[:-1]
+    return ty, lyt
+
+
+def _trend_chart(period_name, freq, metric):
+    ty, lyt = _trend_series(period_name, freq, metric)
+    if ty.empty:
         _empty()
         return
-    ly = analytics.ly_range(*cur)
-    ly_df = analytics.apply_filters(fact, ly[0], ly[1], filters)
-    ty = analytics.trend(cur_df, metric, fmap[freq]).reset_index(drop=True)
-    lyt = analytics.trend(ly_df, metric, fmap[freq]).reset_index(drop=True)
-    chart = pd.DataFrame({"TY": ty[metric]}) if not ty.empty else pd.DataFrame({"TY": []})
-    if not lyt.empty and not ty.empty:
+    chart = pd.DataFrame({"TY": ty[metric].values})
+    if not lyt.empty:
         vals = list(lyt[metric].values)[:len(ty)]
         vals += [None] * (len(ty) - len(vals))
         chart["LY"] = vals
-    st.markdown(f"**{sem.nice(metric)} — {period} ({freq.lower()}), TY vs LY**")
-    st.line_chart(chart, height=340)
+    st.line_chart(chart, height=240)
+
+
+def render_trends():
+    labels = list(TREND_PERIODS.keys())
+    period_label = st.selectbox("Time period", labels, index=labels.index(TREND_DEFAULT), key="trend_period",
+                                help="Applies to all 4 charts below. Weekly views only show complete weeks.")
+    period_name, freq = TREND_PERIODS[period_label]
+    st.caption(f"{period_name} · {analytics.FREQ_LABEL[freq]} · TY vs LY")
+    defaults = KPI_GROUPS["Overview Metrics"]
+    cols = st.columns(2)
+    for i in range(4):
+        with cols[i % 2]:
+            metric = st.selectbox("Metric", ALL_KPIS, index=ALL_KPIS.index(defaults[i % len(defaults)]),
+                                  format_func=sem.nice, key=f"trend_metric_{i}")
+            st.caption(metric_help(metric))
+            _trend_chart(period_name, freq, metric)
 
 
 def _empty(msg="No data for this period and these filters."):
@@ -644,6 +674,7 @@ def _empty(msg="No data for this period and these filters."):
 
 
 _TOTAL_ROW_STYLE = "font-weight:700;background-color:#F7F8FA;border-top:1.5px solid #CBD2DE;"
+_SUBTOTAL_ROW_STYLE = "font-weight:600;background-color:#F0F2F5;border-top:1px solid #E4E8EF;"
 
 
 def _style_pct_cell(val, direction):
@@ -655,37 +686,154 @@ def _style_pct_cell(val, direction):
     return ""
 
 
-def _comparison_section(dimension, metrics):
+def _fmt_delta(m, cur_val, cmp_val):
+    """Absolute change in the metric's own unit (percentage POINTS for a
+    percent-format metric, since a plain % of a % is not meaningful)."""
+    if cur_val is None or cmp_val is None or pd.isna(cur_val) or pd.isna(cmp_val):
+        return "—"
+    diff = cur_val - cmp_val
+    meta = sem.metric_meta(m)
+    sign = "+" if diff >= 0 else "−"
+    a = abs(diff)
+    fmt_, dp = meta["format"], meta.get("dp", {"percent": 1, "ratio": 2}.get(meta["format"], 0))
+    if fmt_ == "percent":
+        return f"{sign}{a * 100:.{dp}f}pp"
+    if fmt_ == "currency":
+        return f"{sign}£{a:,.{dp}f}"
+    if fmt_ == "ratio":
+        return f"{sign}{a:.{dp}f}"
+    return f"{sign}{a:,.{dp}f}"
+
+
+def _metric_row_cells(m, cur_val, cmp_val):
+    """One row's cells for a metric's column group: value, and — when a
+    comparison period is active — the comparison value, absolute delta and
+    % delta. NaN/missing values always resolve to '—', never blank/'nan'."""
+    cells = {sem.nice(m): sem.fmt(m, cur_val)}
+    if cmp_enabled:
+        cells[f"{m}__cmp"] = sem.fmt(m, cmp_val)
+        cells[f"{m}__delta"] = _fmt_delta(m, cur_val, cmp_val)
+        cells[f"{m}__pct"] = fmt_pct(_vs_pct(cur_val, cmp_val))
+    return cells
+
+
+def _metric_col_cfg(m, cfg, shade_cols, shade):
+    mcol = sem.nice(m)
+    cfg[mcol] = st.column_config.Column(help=metric_help(m))
+    if shade:
+        shade_cols.append(mcol)
+    if cmp_enabled:
+        note = _cmp_note()
+        cfg[f"{m}__cmp"] = st.column_config.Column(cmp_label, help=f"{mcol} in {note}", width="small")
+        cfg[f"{m}__delta"] = st.column_config.Column("Δ", help=f"{mcol} change vs {note} (absolute)", width="small")
+        cfg[f"{m}__pct"] = st.column_config.Column(f"v {cmp_label}", help=f"{mcol} change vs {note} (%)", width="small")
+        if shade:
+            shade_cols += [f"{m}__cmp", f"{m}__delta", f"{m}__pct"]
+
+
+def _render_metric_table(dim_label, rows, metrics):
+    """rows: list of (label, kind, cur_vals_dict, cmp_vals_dict_or_None),
+    kind in {'row','subtotal','total'}. Shades alternating metrics' column
+    groups so adjacent metrics with their own value/LY/Δ/v-LY columns read
+    as distinct blocks, and keeps headers short (label=, not the column's
+    internal key) so 'Gross Revenue vs LY' becomes just 'v LY'."""
+    disp_rows, kinds = [], []
+    for label, kind, cur_vals, cmp_vals in rows:
+        row = {dim_label: label}
+        for m in metrics:
+            row.update(_metric_row_cells(m, cur_vals.get(m), (cmp_vals or {}).get(m)))
+        disp_rows.append(row)
+        kinds.append(kind)
+    disp = pd.DataFrame(disp_rows)
+    cfg, shade_cols = {}, []
+    for i, m in enumerate(metrics):
+        _metric_col_cfg(m, cfg, shade_cols, shade=(i % 2 == 1))
+    styler = disp.style
+    if shade_cols:
+        styler = styler.set_properties(subset=shade_cols, **{"background-color": "#FAFBFC"})
+    row_style = {"total": _TOTAL_ROW_STYLE, "subtotal": _SUBTOTAL_ROW_STYLE}
+    styler = styler.apply(lambda row: [row_style.get(kinds[row.name], "") for _ in row], axis=1)
+    if cmp_enabled:
+        for m in metrics:
+            direction = _metric_direction(m)
+            styler = styler.map(lambda v, d=direction: _style_pct_cell(v, d), subset=[f"{m}__pct"])
+    st.dataframe(styler, use_container_width=True, hide_index=True, column_config=cfg)
+
+
+def _dimension_rows(dimension, metrics):
+    """(label, kind, cur_vals, cmp_vals) rows for a plain one-level breakdown,
+    sorted by the first metric, with a grand Total appended."""
+    cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    cmp_df = analytics.apply_filters(fact, cmp[0], cmp[1], filters) if cmp_enabled else cur_df.iloc[0:0]
+    a = analytics.aggregate(cur_df, [dimension], metrics)
+    if metrics:
+        a = a.sort_values(metrics[0], ascending=False)
+    b_idx = (analytics.aggregate(cmp_df, [dimension], metrics).set_index(dimension)
+             if cmp_enabled and not cmp_df.empty else None)
+    rows = []
+    for _, r in a.iterrows():
+        key = r[dimension]
+        cmp_vals = b_idx.loc[key].to_dict() if b_idx is not None and key in b_idx.index else None
+        rows.append((key, "row", r.to_dict(), cmp_vals))
+    cur_tot = analytics.totals(cur_df, metrics)
+    cmp_tot = analytics.totals(cmp_df, metrics) if cmp_enabled and not cmp_df.empty else None
+    rows.append(("Total", "total", cur_tot, cmp_tot))
+    return rows
+
+
+def _channel_rows(metrics):
+    """Like _dimension_rows, but channels are grouped under Paid/Unpaid
+    subsections, each closed off with its own subtotal, before the grand
+    Total — so spend efficiency reads at both the channel and paid/unpaid
+    level without leaving the table."""
+    cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    cmp_df = analytics.apply_filters(fact, cmp[0], cmp[1], filters) if cmp_enabled else cur_df.iloc[0:0]
+    a = analytics.aggregate(cur_df, ["marketing_channel_group", "marketing_channel"], metrics)
+    b_idx = (analytics.aggregate(cmp_df, ["marketing_channel_group", "marketing_channel"], metrics)
+             .set_index("marketing_channel")
+             if cmp_enabled and not cmp_df.empty else None)
+    g = sem.D["dimensions"]["marketing_channel_group"]
+    rows = []
+    for grp in (g["paid_label"], g["unpaid_label"]):
+        sub = a[a["marketing_channel_group"] == grp]
+        if metrics:
+            sub = sub.sort_values(metrics[0], ascending=False)
+        for _, r in sub.iterrows():
+            ch = r["marketing_channel"]
+            cmp_vals = b_idx.loc[ch].to_dict() if b_idx is not None and ch in b_idx.index else None
+            rows.append((ch, "row", r.to_dict(), cmp_vals))
+        if sub.empty:
+            continue
+        grp_cur = cur_df[cur_df["marketing_channel_group"] == grp]
+        grp_cmp = cmp_df[cmp_df["marketing_channel_group"] == grp] if cmp_enabled else grp_cur.iloc[0:0]
+        rows.append((f"{grp} total", "subtotal", analytics.totals(grp_cur, metrics),
+                    analytics.totals(grp_cmp, metrics) if cmp_enabled and not grp_cmp.empty else None))
+    cur_tot = analytics.totals(cur_df, metrics)
+    cmp_tot = analytics.totals(cmp_df, metrics) if cmp_enabled and not cmp_df.empty else None
+    rows.append(("Total", "total", cur_tot, cmp_tot))
+    return rows
+
+
+def _channel_breakdown():
     view = analytics.apply_filters(fact, cur[0], cur[1], filters)
     if view.empty:
         _empty()
         return
-    dcol = sem.nice(dimension)
-    tbl = analytics.comparison_table(fact, dimension, metrics, cur, cmp, filters)
-    disp = pd.DataFrame({dcol: tbl[dimension]})
-    tips, vs_cols = {}, {}
-    for m in metrics:
-        mcol = sem.nice(m)
-        disp[mcol] = tbl[m].map(lambda v, mm=m: sem.fmt(mm, v))
-        tips[mcol] = metric_help(m)
-        if cmp_enabled:
-            vcol = f"{mcol} vs {cmp_label}"
-            disp[vcol] = tbl[f"{m}__vs%"].map(fmt_pct)
-            tips[vcol] = f"Change vs {_cmp_note()}"
-            vs_cols[vcol] = _metric_direction(m)
-    styler = disp.style.apply(
-        lambda row: [_TOTAL_ROW_STYLE if row[dcol] == "Total" else "" for _ in row], axis=1)
-    for vcol, direction in vs_cols.items():
-        styler = styler.map(lambda v, d=direction: _style_pct_cell(v, d), subset=[vcol])
-    st.dataframe(styler, use_container_width=True, hide_index=True, column_config=_tips(tips))
+    for group in SUMMARY_GROUPS:
+        metrics = KPI_GROUPS[group]
+        st.markdown(f"##### {group}")
+        _render_metric_table("Marketing Channel", _channel_rows(metrics), metrics)
 
 
-BIZ = ["revenue", "visits", "orders", "conversion_rate", "aov", "spend", "roas"]
-
-
-def _period_caption():
-    return (f"{period} · {cur[0]} → {cur[1]}  ·  {comparison.lower()}"
-            + ("" if conn_state()["active_source"] == "shopify" else "  ·  demo data"))
+def _dimension_breakdown(dimension):
+    view = analytics.apply_filters(fact, cur[0], cur[1], filters)
+    if view.empty:
+        _empty()
+        return
+    for group in SUMMARY_GROUPS:
+        metrics = KPI_GROUPS[group]
+        st.markdown(f"##### {group}")
+        _render_metric_table(sem.nice(dimension), _dimension_rows(dimension, metrics), metrics)
 
 
 def _kpi_grid(metrics):
@@ -704,11 +852,11 @@ def page_report():
     with tabs[1]:
         render_trends()
     with tabs[2]:
-        _comparison_section("marketing_channel", BIZ)
+        _channel_breakdown()
     with tabs[3]:
-        _comparison_section("geo_market", BIZ)
+        _dimension_breakdown("geo_market")
     with tabs[4]:
-        _comparison_section("device", ["revenue", "visits", "orders", "conversion_rate", "aov"])
+        _dimension_breakdown("device")
 
 
 # ── Data Table (simplified explorer) ─────────────────────────────

@@ -233,34 +233,6 @@ def sparkline(fact, metric, start, end, filters=None) -> pd.DataFrame:
         return empty
 
 
-def comparison_table(fact, dimension, metrics, cur, cmp, filters=None, include_total=True) -> pd.DataFrame:
-    """Per dimension value: current, comparison and % change for each metric.
-    When include_total, appends a 'Total' row computed from the whole-period
-    totals (not summed from the per-row ratios — summing e.g. AOV or conversion
-    rate across rows would be wrong; recomputing from base sums is correct)."""
-    cur_df = apply_filters(fact, cur[0], cur[1], filters)
-    cmp_df = apply_filters(fact, cmp[0], cmp[1], filters)
-    a = aggregate(cur_df, [dimension], metrics).set_index(dimension)
-    b = aggregate(cmp_df, [dimension], metrics).set_index(dimension)
-    idx = a.index.union(b.index)
-    out = pd.DataFrame(index=idx)
-    for m in metrics:
-        out[m] = a[m].reindex(idx)
-        out[f"{m}__vs%"] = [_pct(a[m].reindex(idx).iloc[i], b[m].reindex(idx).iloc[i])
-                            for i in range(len(idx))]
-    if metrics:
-        out = out.sort_values(metrics[0], ascending=False)
-    out = out.reset_index().rename(columns={"index": dimension})
-    if include_total:
-        cur_t, cmp_t = totals(cur_df, metrics), totals(cmp_df, metrics)
-        total_row = {dimension: "Total"}
-        for m in metrics:
-            total_row[m] = cur_t[m]
-            total_row[f"{m}__vs%"] = _pct(cur_t[m], cmp_t[m])
-        out = pd.concat([out, pd.DataFrame([total_row])], ignore_index=True)
-    return out
-
-
 # ── Targets ──────────────────────────────────────────────────────
 def config_target_map() -> dict:
     return sem.D.get("targets", {}).get("column_map", {})
