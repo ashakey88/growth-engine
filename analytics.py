@@ -249,15 +249,41 @@ def config_target_map() -> dict:
     return sem.D.get("targets", {}).get("column_map", {})
 
 
-def target_total(targets, date_from, date_to, metric: str):
-    if targets is None:
-        return None
+def _direct_target_total(targets, date_from, date_to, metric: str):
+    """Target total for a metric with its own column in the targets file."""
     col = next((tc for tc, mn in config_target_map().items()
                 if mn == metric and tc in targets.columns), None)
     if col is None:
         return None
     m = (targets["date"] >= pd.Timestamp(date_from)) & (targets["date"] <= pd.Timestamp(date_to))
     return float(targets.loc[m, col].sum())
+
+
+def target_total(targets, date_from, date_to, metric: str):
+    """Target total for `metric` — direct if it has its own targets column,
+    otherwise an IMPLIED target for derived metrics: recompute the metric's own
+    formula over the target totals of its base metrics (e.g. conversion_rate's
+    target = target_orders / target_visits). Returns None if the metric isn't
+    targeted directly and its inputs aren't fully targeted either."""
+    if targets is None:
+        return None
+    direct = _direct_target_total(targets, date_from, date_to, metric)
+    if direct is not None:
+        return direct
+    if metric not in sem.D["metrics"].get("derived", {}):
+        return None
+    row = {}
+    for base in sem.BASE_METRICS:
+        v = _direct_target_total(targets, date_from, date_to, base)
+        if v is not None:
+            row[base] = v
+    if not row:
+        return None
+    try:
+        val = sem.compute(pd.DataFrame([row]), metric).iloc[0]
+    except Exception:
+        return None  # formula needs a base metric with no target set
+    return None if pd.isna(val) else float(val)
 
 
 def validate_targets(df: pd.DataFrame) -> tuple[bool, str]:
