@@ -195,13 +195,27 @@ def kpi_rows(fact, metrics, cur, cmp, targets, filters=None) -> list[dict]:
     return rows
 
 
-def sparkline(fact, metric, end: dt.date, weeks: int = 8, filters=None) -> pd.DataFrame:
-    """Weekly series for the last `weeks` weeks ending at `end` (for a sparkline)."""
-    start = end - dt.timedelta(days=weeks * 7 - 1)
+def spark_freq(start: dt.date, end: dt.date) -> str:
+    """Auto-granularity for a sparkline over [start, end]: day / week / month."""
+    days = (end - start).days + 1
+    if days <= 45:
+        return "D"
+    if days <= 182:
+        return "W"
+    return "M"
+
+
+def sparkline(fact, metric, start: dt.date, end: dt.date, filters=None) -> pd.DataFrame:
+    """Series over the selected period, at auto-selected granularity. Very short
+    periods widen to a trailing 30 days (daily) so the trend stays legible."""
+    if (end - start).days + 1 < 10:
+        start, freq = end - dt.timedelta(days=29), "D"
+    else:
+        freq = spark_freq(start, end)
     df = apply_filters(fact, start, end, filters)
     if df.empty:
         return pd.DataFrame({"period": [], metric: []})
-    return trend(df, metric, "W")
+    return trend(df, metric, freq)
 
 
 def comparison_table(fact, dimension, metrics, cur, cmp, filters=None) -> pd.DataFrame:

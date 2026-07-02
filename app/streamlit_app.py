@@ -422,7 +422,7 @@ def _kpi_card(row):
             f'<div class="kpi-value" title="{sem.fmt(m, row["value"])}">{compact(m, row["value"])}</div>'
             f'<div>{pills}</div>',
             unsafe_allow_html=True)
-        spark = analytics.sparkline(fact, m, cur[1], 8, filters)
+        spark = analytics.sparkline(fact, m, cur[0], cur[1], filters)
         if len(spark) > 1:
             st.altair_chart(_spark_chart(spark, m), use_container_width=True)
 
