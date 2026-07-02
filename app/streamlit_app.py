@@ -400,18 +400,6 @@ def chips(items):
     st.markdown(html, unsafe_allow_html=True)
 
 
-def report_header(title):
-    live = conn_state().get("active_source") == "shopify"
-    st.markdown(f'<div class="ml-eyebrow">{ICONS.get(title,"")} Report</div>', unsafe_allow_html=True)
-    st.title(title)
-    chips([
-        (f"📅 {period}", "accent"),
-        (comparison, ""),
-        (f"Data through {ref}", ""),
-        ("● Live · Shopify" if live else "● Demo data", "live" if live else ""),
-    ])
-
-
 _bootstrap()
 
 with st.sidebar:
@@ -439,24 +427,28 @@ if fact is None or fact.empty:
     st.stop()
 
 ref = fact["date"].max().date()
-FILTER_DIMS = ["marketing_channel_group", "marketing_channel", "paid_ad_platform",
-               "geo_region", "geo_market", "device"]
+targets = get_targets()
 
-if page in PERIOD_PAGES:
-    with st.sidebar:
-        st.markdown("---")
-        period = st.selectbox("📅 Period", analytics.PERIODS,
-                              index=analytics.PERIODS.index("Month to Date"),
-                              help="The reporting window, relative to the latest data.")
-        comparison = st.selectbox("⚖️ Compare against", ["vs Last Year", "vs Prior Period"],
-                                  help="What every % change is measured against.")
-        spec = PAGE_FILTERS.get(page, [])
-        fkeys = {dim: f"flt_{page}_{dim}" for dim in spec}  # per-page keys → independent
-        active = sum(len(st.session_state.get(k, [])) for k in fkeys.values())
-        filters = {}
+
+def _period_bar():
+    """Period / comparison / filters control row — rendered in the main content
+    area, right under each report's title, rather than tucked in the sidebar.
+    Sets the module-level cur/cmp/filters/etc used throughout each page."""
+    global period, comparison, filters, cur, cmp, cmp_label
+    c1, c2, c3 = st.columns([1.1, 1.1, 1.6])
+    period = c1.selectbox("📅 Period", analytics.PERIODS,
+                          index=analytics.PERIODS.index("Month to Date"),
+                          key="period_ctrl", help="The reporting window, relative to the latest data.")
+    comparison = c2.selectbox("⚖️ Compare against", ["vs Last Year", "vs Prior Period"],
+                              key="cmp_ctrl", help="What every % change is measured against.")
+    spec = PAGE_FILTERS.get(page, [])
+    filters = {}
+    with c3:
         if spec:
+            fkeys = {dim: f"flt_{page}_{dim}" for dim in spec}  # per-page keys → independent
+            active = sum(len(st.session_state.get(k, [])) for k in fkeys.values())
             with st.expander(f"🔎 Filters{f'  ·  {active} active' if active else ''}",
-                             expanded=bool(active)):
+                             expanded=False):
                 for dim in spec:
                     opts = _filter_options(dim)
                     sel = st.multiselect(sem.nice(dim), opts, key=fkeys[dim])
@@ -465,7 +457,20 @@ if page in PERIOD_PAGES:
     cur = analytics.resolve_period(period, ref)
     cmp = analytics.ly_range(*cur) if comparison == "vs Last Year" else analytics.prior_period(*cur)
     cmp_label = "LY" if comparison == "vs Last Year" else "Prior"
-    targets = get_targets()
+
+
+def _page_header(title, icon, tier="Report"):
+    """Eyebrow + title, then — for pages with a period — the period / compare /
+    filters row right underneath the title, rather than lost in the sidebar."""
+    st.markdown(f'<div class="ml-eyebrow">{icon} {tier}</div>', unsafe_allow_html=True)
+    st.title(title)
+    if page in PERIOD_PAGES:
+        _period_bar()
+        live = conn_state().get("active_source") == "shopify"
+        chips([
+            (f"Data through {ref}", ""),
+            ("● Live · Shopify" if live else "● Demo data", "live" if live else ""),
+        ])
 
 
 # ── Report sections ──────────────────────────────────────────────
@@ -618,7 +623,7 @@ def _kpi_grid(metrics):
 
 
 def page_report():
-    report_header("eCommerce")
+    _page_header("eCommerce", "🛒")
     tabs = st.tabs(["Summary", "Trends", "Channels", "Regions", "Devices"])
     with tabs[0]:
         render_summary()
@@ -634,9 +639,7 @@ def page_report():
 
 # ── Data Table (simplified explorer) ─────────────────────────────
 def page_data_table():
-    st.markdown('<div class="ml-eyebrow">🔎 Utility</div>', unsafe_allow_html=True)
-    st.title("Data Table")
-    chips([(f"📅 {period}", "accent"), (f"{cur[0]} → {cur[1]}", "")])
+    _page_header("Data Table", "🔎", "Utility")
     view = analytics.apply_filters(fact, cur[0], cur[1], filters)
     dims = ["date", "source", "marketing_channel_group", "marketing_channel",
             "paid_ad_platform", "geo_region", "geo_market", "device"]
@@ -751,7 +754,7 @@ def page_targets():
 
 # ── Profitability (flagship — built from data in hand) ───────────
 def page_profitability():
-    report_header("Profitability")
+    _page_header("Profitability", "💷")
     st.markdown("#### Headline")
     _kpi_grid(["revenue", "gross_profit", "gross_margin_pct", "contribution"])
     _kpi_grid(["contribution_margin", "spend", "mer", "discount_rate"])
@@ -833,15 +836,9 @@ def _stub(title, purpose, sections, needs=None, tier="Report"):
         st.warning(f"🔌 Unlocks when connected: {needs}")
 
 
-def _report_top(title, icon):
-    st.markdown(f'<div class="ml-eyebrow">{icon} Report</div>', unsafe_allow_html=True)
-    st.title(title)
-    chips([(f"📅 {period}", "accent"), (comparison, ""), (f"Data through {ref}", "")])
-
-
 # ── Customers & Retention ────────────────────────────────────────
 def page_customers():
-    _report_top("Customers & Retention", "👥")
+    _page_header("Customers & Retention", "👥")
     orders = get_orders()
     if orders is None or orders.empty:
         _empty("No order data.")
@@ -963,7 +960,7 @@ def _product_agg(df):
 
 
 def page_product():
-    _report_top("Product / Merchandising", "📦")
+    _page_header("Product / Merchandising", "📦")
     fp = get_product_fact()
     if fp is None or fp.empty:
         _empty("No product data.")
@@ -1159,7 +1156,7 @@ def page_product():
 
 # ── Paid Media ───────────────────────────────────────────────────
 def page_paid_media():
-    _report_top("Paid Media", "📣")
+    _page_header("Paid Media", "📣")
     cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
     total_rev = analytics.totals(cur_df, ["revenue"])["revenue"]
     orders = analytics.totals(cur_df, ["orders"])["orders"]
@@ -1242,9 +1239,7 @@ def page_paid_media():
 
 # ── SEO (Analysis) ───────────────────────────────────────────────
 def page_seo():
-    st.markdown('<div class="ml-eyebrow">🔎 Analysis</div>', unsafe_allow_html=True)
-    st.title("SEO")
-    chips([(f"📅 {period}", "accent"), (f"{cur[0]} → {cur[1]}", "")])
+    _page_header("SEO", "🔎", "Analysis")
     seo = get_seo_fact()
     if seo is None or seo.empty:
         st.info("🔌 Connect Search Console to light up SEO.")
@@ -1301,7 +1296,7 @@ def page_seo():
 
 # ── Forecast & Pacing (Perf vs Budget + run-rate) ────────────────
 def page_forecast():
-    _report_top("Forecast & Pacing", "🎯")
+    _page_header("Forecast & Pacing", "🎯")
     t1, t2 = st.tabs(["Perf vs Budget", "Run-rate"])
     budget_metrics = ["revenue", "orders", "gross_profit", "spend", "visits"]
     cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
@@ -1344,7 +1339,7 @@ def page_forecast():
 
 # ── Orderbank ────────────────────────────────────────────────────
 def page_orderbank():
-    _report_top("Orderbank", "📥")
+    _page_header("Orderbank", "📥")
     st.caption("Open sales orders taken but not yet invoiced.")
     ob = get_orderbank()
     if ob is None or ob.empty:
@@ -1370,9 +1365,7 @@ def page_orderbank():
 
 # ── Order Insight (Analysis) ─────────────────────────────────────
 def page_order_insight():
-    st.markdown('<div class="ml-eyebrow">🧾 Analysis</div>', unsafe_allow_html=True)
-    st.title("Order Insight")
-    chips([(f"📅 {period}", "accent"), (f"{cur[0]} → {cur[1]}", "")])
+    _page_header("Order Insight", "🧾", "Analysis")
     li = get_line_items()
     if li is None or li.empty:
         _empty("No line-item data.")
@@ -1425,9 +1418,7 @@ def page_order_insight():
 
 # ── Exec Digest (Intelligence) ───────────────────────────────────
 def page_exec_digest():
-    st.markdown('<div class="ml-eyebrow">📌 Intelligence</div>', unsafe_allow_html=True)
-    st.title("Exec Digest")
-    chips([(f"📅 {period}", "accent"), (comparison, ""), (f"Data through {ref}", "")])
+    _page_header("Exec Digest", "📌", "Intelligence")
     st.caption("The Monday-morning one-pager — the numbers that matter and what moved.")
     _kpi_grid(["revenue", "contribution", "gross_margin_pct", "mer"])
     _kpi_grid(["orders", "aov", "spend", "roas"])
@@ -1446,8 +1437,7 @@ def page_exec_digest():
 
 # ── AI Analyst (Intelligence) — deterministic insights for now ───
 def page_ai_analyst():
-    st.markdown('<div class="ml-eyebrow">🤖 Intelligence</div>', unsafe_allow_html=True)
-    st.title("AI Analyst")
+    _page_header("AI Analyst", "🤖", "Intelligence")
     st.caption("Auto-generated insights over your commercial data. Natural-language "
                "questions arrive once an LLM is wired in.")
     st.text_input("Ask a question (coming soon)", placeholder="e.g. why did margin drop last week?",
@@ -1482,8 +1472,7 @@ BENCHMARKS = {"conversion_rate": 0.025, "aov": 75, "gross_margin_pct": 0.62,
 
 
 def page_benchmarks():
-    st.markdown('<div class="ml-eyebrow">📐 Intelligence</div>', unsafe_allow_html=True)
-    st.title("Benchmarks")
+    _page_header("Benchmarks", "📐", "Intelligence")
     st.caption("Your numbers vs category benchmarks. Illustrative for now — will be "
                "powered by Malleson Labs research.")
     cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
