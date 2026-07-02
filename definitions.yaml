@@ -154,7 +154,7 @@ display:
   period_quarter:                "Quarter"
   period_year:                   "Year"
   orders:                        "Orders"
-  revenue:                       "Total Revenue Taken"
+  revenue:                       "Gross Revenue"
   gross_sales:                   "Gross Sales"
   discounts:                     "Discounts"
   cogs:                          "COGS"

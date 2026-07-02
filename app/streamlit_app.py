@@ -59,15 +59,18 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-chil
 /* KPI cards */
 [data-testid="stVerticalBlockBorderWrapper"] { transition:box-shadow .15s, transform .15s; }
 [data-testid="stVerticalBlockBorderWrapper"]:hover { box-shadow:0 6px 20px rgba(17,24,39,0.08); transform:translateY(-2px); }
+.kpi-head { display:flex; align-items:center; justify-content:space-between; }
 .kpi-name { font-size:11px; color:#64748B; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; }
 .kpi-value { font-family:'DM Serif Display',serif; font-size:30px; color:#111827; line-height:1.1; margin:2px 0 8px; }
-[data-testid="stPopover"] { width:auto !important; }
-[data-testid="stPopover"] > div { width:auto !important; }
-[data-testid="stPopover"] button { width:auto !important; min-width:0 !important; padding:0 !important;
-  min-height:auto !important; height:20px !important; background:transparent !important; color:#94A3B8 !important;
-  border:none !important; font-size:13px !important; box-shadow:none !important; }
-[data-testid="stPopover"] button:hover { color:#2563EB !important; background:transparent !important; transform:none !important; }
-[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stHorizontalBlock"] { align-items:center; margin-bottom:-16px; }
+/* Tap/click-friendly KPI tooltip: a native <details> disclosure rather than a
+   Streamlit widget, so it costs no extra layout space and needs no rerun. */
+.kpi-tip { position:relative; }
+.kpi-tip summary { list-style:none; cursor:pointer; color:#CBD2DE; font-size:13px; line-height:1; }
+.kpi-tip summary::-webkit-details-marker { display:none; }
+.kpi-tip[open] summary { color:#2563EB; }
+.kpi-tip-body { position:absolute; right:0; top:20px; z-index:20; width:220px; background:#fff;
+  border:1px solid #E4E8EF; border-radius:8px; padding:10px 12px; font-size:12px; font-weight:400;
+  line-height:1.4; color:#374151; text-transform:none; letter-spacing:normal; box-shadow:0 8px 24px rgba(17,24,39,0.14); }
 .pill { display:inline-block; border-radius:999px; padding:3px 10px; font-size:11px; font-weight:700; margin:0 6px 4px 0; white-space:nowrap; }
 .pill.up { background:#DCFCE7; color:#15803D; }
 .pill.down { background:#FEE2E2; color:#B91C1C; }
@@ -593,13 +596,11 @@ def _kpi_card(row):
     if row.get("target") is not None:  # only show the target pill when a target exists
         pills += _pill(m, row["vtarg_pct"], "Targ")
     with st.container(border=True):
-        hc1, hc2 = st.columns([10, 1], gap="small")
-        hc1.markdown(f'<span class="kpi-name">{sem.nice(m)}</span>', unsafe_allow_html=True)
-        with hc2:
-            with st.popover("ⓘ"):
-                st.markdown(f"**{sem.nice(m)}**")
-                st.caption(metric_help(m))
         st.markdown(
+            f'<div class="kpi-head"><span class="kpi-name">{sem.nice(m)}</span>'
+            f'<details class="kpi-tip"><summary>ⓘ</summary>'
+            f'<div class="kpi-tip-body"><strong>{sem.nice(m)}</strong><br>{metric_help(m)}</div>'
+            f'</details></div>'
             f'<div class="kpi-value" title="{sem.fmt(m, row["value"])}">{compact(m, row["value"])}</div>'
             f'<div>{pills}</div>',
             unsafe_allow_html=True)
