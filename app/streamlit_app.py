@@ -447,23 +447,70 @@ def _bounded_range(value, lo, hi, key):
     return picked if isinstance(picked, tuple) and len(picked) == 2 else default
 
 
+def _fmt_range(r):
+    s, e = r
+    if s == e:
+        return f"{s:%-d %b %Y}"
+    s_fmt = "%-d %b %Y" if s.year != e.year else "%-d %b"
+    return f"{s:{s_fmt}} – {e:%-d %b %Y}"
+
+
 def _period_bar():
-    """Period / comparison / filters control row — rendered in the main content
-    area, right under each report's title, rather than tucked in the sidebar.
-    Sets the module-level cur/cmp/filters/etc used throughout each page."""
+    """Period / comparison / filters — two compact expanders under the report
+    title, matching each other's pattern: collapsed by default, with the
+    current selection summarised right in the header so it's clear at a
+    glance without opening it. Sets the module-level cur/cmp/filters/etc
+    used throughout each page."""
     global period, comparison, filters, cur, cmp, cmp_label, cmp_enabled
     lo, hi = analytics.date_bounds(fact)
-    c1, c2, c3 = st.columns([1.1, 1.1, 1.6], gap="small")
-    period = c1.selectbox("Period", analytics.PERIODS + [CUSTOM_PERIOD],
-                          index=analytics.PERIODS.index("Month to Date"),
-                          format_func=lambda p: f"📅 {p}", key="period_ctrl",
-                          label_visibility="collapsed")
-    comparison = c2.selectbox("Compare against", COMPARE_OPTIONS,
-                              format_func=lambda c: f"⚖️ {c}", key="cmp_ctrl",
-                              label_visibility="collapsed")
+
+    # Collapsed-header summary, read from session_state the same way the
+    # Filters expander below counts "active" filters before its widgets run.
+    period_val = st.session_state.get("period_ctrl", "Month to Date")
+    if period_val == CUSTOM_PERIOD:
+        pr = st.session_state.get(f"custom_period_{page}")
+        period_txt = _fmt_range(pr) if pr else "Custom period"
+    else:
+        period_txt = period_val
+    cmp_val = st.session_state.get("cmp_ctrl", "vs Last Year")
+    if cmp_val == CUSTOM_PERIOD:
+        cr = st.session_state.get(f"custom_cmp_{page}")
+        cmp_txt = f"vs {_fmt_range(cr)}" if cr else "vs Custom"
+    elif cmp_val == "None":
+        cmp_txt = "no comparison"
+    else:
+        cmp_txt = cmp_val
+
+    c1, c2 = st.columns([1.4, 1], gap="small")
+    with c1:
+        with st.expander(f"📅 {period_txt}   ·   ⚖️ {cmp_txt}", expanded=False):
+            period = st.selectbox("Period", analytics.PERIODS + [CUSTOM_PERIOD],
+                                  index=analytics.PERIODS.index("Month to Date"),
+                                  format_func=lambda p: f"📅 {p}", key="period_ctrl",
+                                  label_visibility="collapsed")
+            comparison = st.selectbox("Compare against", COMPARE_OPTIONS,
+                                      format_func=lambda c: f"⚖️ {c}", key="cmp_ctrl",
+                                      label_visibility="collapsed")
+            if period == CUSTOM_PERIOD:
+                cur = _bounded_range((max(lo, ref - dt.timedelta(days=29)), ref), lo, hi,
+                                     key=f"custom_period_{page}")
+            else:
+                cur = analytics.resolve_period(period, ref)
+
+            if comparison == CUSTOM_PERIOD:
+                cmp = _bounded_range(analytics.prior_period(*cur), lo, hi, key=f"custom_cmp_{page}")
+                cmp_label, cmp_enabled = "Custom", True
+            elif comparison == "None":
+                cmp = analytics.prior_period(*cur)  # computed but not shown — see cmp_enabled
+                cmp_label, cmp_enabled = None, False
+            else:
+                cmp = analytics.ly_range(*cur) if comparison == "vs Last Year" else analytics.prior_period(*cur)
+                cmp_label = "LY" if comparison == "vs Last Year" else "Prior"
+                cmp_enabled = True
+
     spec = PAGE_FILTERS.get(page, [])
     filters = {}
-    with c3:
+    with c2:
         if spec:
             fkeys = {dim: f"flt_{page}_{dim}" for dim in spec}  # per-page keys → independent
             active = sum(len(st.session_state.get(k, [])) for k in fkeys.values())
@@ -474,23 +521,6 @@ def _period_bar():
                     sel = st.multiselect(sem.nice(dim), opts, key=fkeys[dim])
                     if sel:
                         filters[dim] = sel
-
-    if period == CUSTOM_PERIOD:
-        cur = _bounded_range((max(lo, ref - dt.timedelta(days=29)), ref), lo, hi,
-                             key=f"custom_period_{page}")
-    else:
-        cur = analytics.resolve_period(period, ref)
-
-    if comparison == CUSTOM_PERIOD:
-        cmp = _bounded_range(analytics.prior_period(*cur), lo, hi, key=f"custom_cmp_{page}")
-        cmp_label, cmp_enabled = "Custom", True
-    elif comparison == "None":
-        cmp = analytics.prior_period(*cur)  # computed but not shown — see cmp_enabled
-        cmp_label, cmp_enabled = None, False
-    else:
-        cmp = analytics.ly_range(*cur) if comparison == "vs Last Year" else analytics.prior_period(*cur)
-        cmp_label = "LY" if comparison == "vs Last Year" else "Prior"
-        cmp_enabled = True
 
 
 def _page_header(title, icon):
