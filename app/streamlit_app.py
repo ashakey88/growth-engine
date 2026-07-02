@@ -98,21 +98,22 @@ KPI_GROUPS = {
 ALL_KPIS = [m for g in KPI_GROUPS.values() for m in g]
 
 SECTIONS = {
-    "Reports": ["eCommerce", "Profitability", "Customers", "Product", "Acquisition",
+    "Reports": ["eCommerce", "Profitability", "Customers", "Product", "Paid Media",
                 "Forecast"],
-    "Analysis": ["Order Insight"],
+    "Analysis": ["Order Insight", "SEO"],
     "Intelligence": ["Exec Digest", "AI Analyst", "Benchmarks", "Data Trust"],
     "Utility": ["Data Table", "Connect sources", "Targets"],
 }
-PERIOD_PAGES = {"eCommerce", "Profitability", "Customers", "Product", "Acquisition",
-                "Forecast", "Order Insight", "Benchmarks", "Data Table",
+PERIOD_PAGES = {"eCommerce", "Profitability", "Customers", "Product", "Paid Media",
+                "Forecast", "Order Insight", "SEO", "Benchmarks", "Data Table",
                 "Exec Digest", "AI Analyst"}
 
 # Filters relevant to each report (not the same set everywhere).
 PAGE_FILTERS = {
     "eCommerce": ["marketing_channel_group", "marketing_channel", "paid_ad_platform", "geo_region", "device"],
     "Profitability": ["geo_region", "marketing_channel_group"],
-    "Acquisition": ["paid_ad_platform", "paid_campaign_type", "geo_region"],
+    "Paid Media": ["paid_ad_platform", "paid_campaign_type", "geo_region"],
+    "SEO": [],
     "Forecast": ["geo_region"],
     "Exec Digest": ["geo_region"],
     "Benchmarks": ["geo_region"],
@@ -244,7 +245,8 @@ def _filt(df, filters):
 ICONS = {
     "Reports": "📊", "Analysis": "🔬", "Intelligence": "✨", "Utility": "⚙️",
     "eCommerce": "🛒", "Profitability": "💷", "Customers": "👥", "Product": "📦",
-    "Acquisition": "📣", "Forecast": "🎯", "Orderbank": "📥", "Order Insight": "🧾", "Exec Digest": "📌",
+    "Paid Media": "📣", "Forecast": "🎯", "Orderbank": "📥", "Order Insight": "🧾",
+    "SEO": "🔎", "Exec Digest": "📌",
     "AI Analyst": "🤖", "Benchmarks": "📐", "Data Trust": "🛡️", "Data Table": "🔎",
     "Connect sources": "🔌", "Targets": "🎚️",
 }
@@ -880,11 +882,12 @@ def page_product():
                 st.bar_chart(rr.groupby("reason").size().sort_values(ascending=False), height=240)
 
 
-# ── Acquisition / Paid Media ─────────────────────────────────────
-def page_acquisition():
-    _report_top("Acquisition / Paid Media", "📣")
+# ── Paid Media ───────────────────────────────────────────────────
+def page_paid_media():
+    _report_top("Paid Media", "📣")
     cur_df = analytics.apply_filters(fact, cur[0], cur[1], filters)
     total_rev = analytics.totals(cur_df, ["revenue"])["revenue"]
+    orders = analytics.totals(cur_df, ["orders"])["orders"]
     paid = cur_df[cur_df["paid_ad_platform"] != sem.NA]
     if paid.empty:
         _empty("No paid media data.")
@@ -893,51 +896,57 @@ def page_acquisition():
     metrics_row([
         ("Total spend", money(spend), None),
         ("Blended MER", ratio(total_rev / spend) if spend else "—", "Total revenue ÷ total ad spend"),
-        ("Blended CAC", money(spend / analytics.totals(cur_df, ["orders"])["orders"]
-         if analytics.totals(cur_df, ["orders"])["orders"] else 0), "Spend ÷ orders"),
+        ("Blended CAC", money(spend / orders) if orders else "—", "Spend ÷ orders"),
         ("Platform ROAS", ratio(paid["platform_conversion_value_7d"].sum() / spend) if spend else "—",
          "Platform-reported value ÷ spend"),
     ])
-    t1, t2 = st.tabs(["By platform", "SEO"])
-    with t1:
-        g = paid.groupby("paid_ad_platform").agg(spend=("spend", "sum"),
-            impressions=("impressions", "sum"), clicks=("clicks", "sum"),
-            conv=("platform_conversions_7d", "sum"),
-            conv_val=("platform_conversion_value_7d", "sum")).reset_index()
-        g["ROAS"] = (g["conv_val"] / g["spend"]).round(2)
-        g["CTR %"] = (g["clicks"] / g["impressions"] * 100).round(2)
-        g["CPC"] = (g["spend"] / g["clicks"]).round(2)
-        g["CPA"] = (g["spend"] / g["conv"].replace(0, np.nan)).round(2)
-        st.bar_chart(g.set_index("paid_ad_platform"), y="spend", height=260)
-        show = g[["paid_ad_platform", "spend", "conv", "ROAS", "CTR %", "CPC", "CPA"]].copy()
-        show.columns = ["Platform", "Spend", "Conversions", "ROAS", "CTR %", "CPC", "CPA"]
-        show["Spend"] = show["Spend"].map(money)
-        show["Conversions"] = show["Conversions"].map(num)
-        st.dataframe(show, use_container_width=True, hide_index=True)
-        st.caption("Channel truth: these are *platform-reported* conversions (Meta/Google over-report). "
-                   "True channel-level revenue needs GA4→sales reconciliation — a next step.")
-    with t2:
-        seo = get_seo_fact()
-        if seo is None or seo.empty:
-            st.info("🔌 Connect Search Console to light up SEO.")
-        else:
-            s = _in_period(seo)
-            metrics_row([("Clicks", num(s["clicks"].sum()), None),
-                         ("Impressions", num(s["impressions"].sum()), None),
-                         ("Avg position", ratio(s["position"].mean()), "Lower is better"),
-                         ("CTR", pctv(s["clicks"].sum() / s["impressions"].sum()
-                          if s["impressions"].sum() else 0, 2), None)])
-            if "branded" in s:
-                b = s.groupby("branded").agg(clicks=("clicks", "sum")).reset_index()
-                b["branded"] = b["branded"].map({True: "Branded", False: "Non-branded"})
-                st.bar_chart(b.set_index("branded"), y="clicks", height=220)
-            q = s.groupby("query").agg(clicks=("clicks", "sum"), impressions=("impressions", "sum"),
-                position=("position", "mean")).reset_index().sort_values("clicks", ascending=False).head(15)
-            q["position"] = q["position"].round(1)
-            q["clicks"] = q["clicks"].map(num)
-            q["impressions"] = q["impressions"].map(num)
-            q.columns = ["Query", "Clicks", "Impressions", "Avg position"]
-            st.dataframe(q, use_container_width=True, hide_index=True)
+    g = paid.groupby("paid_ad_platform").agg(spend=("spend", "sum"),
+        impressions=("impressions", "sum"), clicks=("clicks", "sum"),
+        conv=("platform_conversions_7d", "sum"),
+        conv_val=("platform_conversion_value_7d", "sum")).reset_index()
+    g["ROAS"] = (g["conv_val"] / g["spend"]).round(2)
+    g["CTR %"] = (g["clicks"] / g["impressions"] * 100).round(2)
+    g["CPC"] = (g["spend"] / g["clicks"]).round(2)
+    g["CPA"] = (g["spend"] / g["conv"].replace(0, np.nan)).round(2)
+    st.bar_chart(g.set_index("paid_ad_platform"), y="spend", height=260)
+    show = g[["paid_ad_platform", "spend", "conv", "ROAS", "CTR %", "CPC", "CPA"]].copy()
+    show.columns = ["Platform", "Spend", "Conversions", "ROAS", "CTR %", "CPC", "CPA"]
+    show["Spend"] = show["Spend"].map(money)
+    show["Conversions"] = show["Conversions"].map(num)
+    st.dataframe(show, use_container_width=True, hide_index=True)
+    st.caption("Channel truth: these are *platform-reported* conversions (Meta/Google over-report). "
+               "True channel-level revenue needs GA4→sales reconciliation — a next step.")
+
+
+# ── SEO (Analysis) ───────────────────────────────────────────────
+def page_seo():
+    st.markdown('<div class="ml-eyebrow">🔎 Analysis</div>', unsafe_allow_html=True)
+    st.title("SEO")
+    chips([(f"📅 {period}", "accent"), (f"{cur[0]} → {cur[1]}", "")])
+    seo = get_seo_fact()
+    if seo is None or seo.empty:
+        st.info("🔌 Connect Search Console to light up SEO.")
+        return
+    s = _in_period(seo)
+    if s.empty:
+        _empty()
+        return
+    metrics_row([("Clicks", num(s["clicks"].sum()), None),
+                 ("Impressions", num(s["impressions"].sum()), None),
+                 ("Avg position", ratio(s["position"].mean()), "Lower is better"),
+                 ("CTR", pctv(s["clicks"].sum() / s["impressions"].sum()
+                  if s["impressions"].sum() else 0, 2), None)])
+    if "branded" in s:
+        b = s.groupby("branded").agg(clicks=("clicks", "sum")).reset_index()
+        b["branded"] = b["branded"].map({True: "Branded", False: "Non-branded"})
+        st.bar_chart(b.set_index("branded"), y="clicks", height=220)
+    q = s.groupby("query").agg(clicks=("clicks", "sum"), impressions=("impressions", "sum"),
+        position=("position", "mean")).reset_index().sort_values("clicks", ascending=False).head(15)
+    q["position"] = q["position"].round(1)
+    q["clicks"] = q["clicks"].map(num)
+    q["impressions"] = q["impressions"].map(num)
+    q.columns = ["Query", "Clicks", "Impressions", "Avg position"]
+    st.dataframe(q, use_container_width=True, hide_index=True)
 
 
 # ── Forecast & Pacing (Perf vs Budget + run-rate) ────────────────
@@ -1129,8 +1138,8 @@ def page_benchmarks():
 PAGES = {
     "eCommerce": page_report, "Profitability": page_profitability,
     "Customers": page_customers, "Product": page_product,
-    "Acquisition": page_acquisition, "Forecast": page_forecast,
-    "Order Insight": page_order_insight, "Exec Digest": page_exec_digest,
+    "Paid Media": page_paid_media, "Forecast": page_forecast,
+    "Order Insight": page_order_insight, "SEO": page_seo, "Exec Digest": page_exec_digest,
     "AI Analyst": page_ai_analyst, "Benchmarks": page_benchmarks,
     "Data Trust": page_data_trust, "Data Table": page_data_table,
     "Connect sources": page_connect, "Targets": page_targets,
