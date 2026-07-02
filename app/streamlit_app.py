@@ -220,6 +220,11 @@ def metrics_row(items):
         c.metric(it[0], it[1], help=it[2] if len(it) > 2 else None)
 
 
+def _tips(help_map: dict):
+    """Column header tooltips for st.dataframe: {column_name: definition}."""
+    return {c: st.column_config.Column(help=h) for c, h in help_map.items()}
+
+
 def _in_period(df, col="date"):
     m = (df[col] >= pd.Timestamp(cur[0])) & (df[col] <= pd.Timestamp(cur[1]))
     return df[m]
@@ -479,10 +484,14 @@ def _comparison_section(dimension, metrics):
         return
     tbl = analytics.comparison_table(fact, dimension, metrics, cur, cmp, filters)
     disp = pd.DataFrame({sem.nice(dimension): tbl[dimension]})
+    tips = {}
     for m in metrics:
-        disp[sem.nice(m)] = tbl[m].map(lambda v, mm=m: sem.fmt(mm, v))
-        disp[f"vs {cmp_label}"] = tbl[f"{m}__vs%"].map(fmt_pct)
-    st.dataframe(disp, use_container_width=True, hide_index=True)
+        mcol, vcol = sem.nice(m), f"{sem.nice(m)} vs {cmp_label}"
+        disp[mcol] = tbl[m].map(lambda v, mm=m: sem.fmt(mm, v))
+        disp[vcol] = tbl[f"{m}__vs%"].map(fmt_pct)
+        tips[mcol] = metric_help(m)
+        tips[vcol] = f"Change vs {'last year' if cmp_label == 'LY' else 'the prior period'}"
+    st.dataframe(disp, use_container_width=True, hide_index=True, column_config=_tips(tips))
 
 
 BIZ = ["revenue", "visits", "orders", "conversion_rate", "aov", "spend", "roas"]
@@ -749,10 +758,10 @@ def page_customers():
         ("Customers", num(custs), "Distinct customers who ordered this period"),
         ("New customers", num(new), "First-ever order fell in this period"),
         ("Repeat rate", pctv((custs - new) / custs if custs else 0), "Returning ÷ all customers"),
-        ("Orders / customer", ratio(orders_ct / custs if custs else 0), None),
+        ("Orders / customer", ratio(orders_ct / custs if custs else 0), "Orders this period ÷ customers who ordered"),
     ])
     metrics_row([
-        ("AOV", money(revenue / orders_ct if orders_ct else 0), None),
+        ("AOV", money(revenue / orders_ct if orders_ct else 0), "Average order value = Revenue ÷ Orders"),
         ("Avg LTV", money(ltv), "Average lifetime net revenue per customer"),
         ("Blended CAC", money(cac), "Marketing spend ÷ new customers"),
         ("LTV : CAC", ratio(ltv / cac) if cac else "—", "Above 3 is healthy"),
@@ -785,16 +794,25 @@ def page_customers():
             g = e.groupby(["type", "name"]).agg(recipients=("recipients", "sum"),
                 orders=("orders", "sum"), revenue=("revenue", "sum")).reset_index()
             g["rev / recipient"] = g["revenue"] / g["recipients"]
-            metrics_row([("Email revenue", money(g["revenue"].sum()), None),
-                         ("Email orders", num(g["orders"].sum()), None),
-                         ("Rev / recipient", money(g["revenue"].sum() / g["recipients"].sum()
-                          if g["recipients"].sum() else 0), None)])
-            disp = g.sort_values("revenue", ascending=False)
+            metrics_row([
+                ("Email revenue", money(g["revenue"].sum()),
+                 "Revenue attributed to Klaviyo flows and campaigns"),
+                ("Email orders", num(g["orders"].sum()),
+                 "Orders attributed to Klaviyo flows and campaigns"),
+                ("Rev / recipient", money(g["revenue"].sum() / g["recipients"].sum()
+                 if g["recipients"].sum() else 0), "Email revenue ÷ recipients — efficiency per send"),
+            ])
+            disp = g.sort_values("revenue", ascending=False).copy()
             disp["revenue"] = disp["revenue"].map(money)
             disp["rev / recipient"] = disp["rev / recipient"].map(lambda v: f"£{v:,.2f}")
             disp["recipients"] = disp["recipients"].map(num)
             disp["orders"] = disp["orders"].map(num)
-            st.dataframe(disp, use_container_width=True, hide_index=True)
+            disp.columns = ["Type", "Name", "Recipients", "Orders", "Revenue", "Rev / Recipient"]
+            st.dataframe(disp, use_container_width=True, hide_index=True, column_config=_tips({
+                "Type": "Flow (always-on) or one-off campaign",
+                "Recipients": "Number of people the send reached",
+                "Rev / Recipient": "Revenue ÷ recipients — efficiency per send",
+            }))
 
 
 # ── Product / Merchandising ──────────────────────────────────────
@@ -827,10 +845,10 @@ def page_product():
     with t1:
         tot = agg[["revenue", "units", "gross_sales", "discounts", "gross_profit"]].sum()
         metrics_row([
-            ("Revenue", money(tot["revenue"]), None),
-            ("Units", num(tot["units"]), None),
+            ("Revenue", money(tot["revenue"]), "Total product revenue in this period"),
+            ("Units", num(tot["units"]), "Total units sold"),
             ("ASP", money(tot["revenue"] / tot["units"] if tot["units"] else 0), "Average selling price = Revenue ÷ Units"),
-            ("Gross margin", pctv(tot["gross_profit"] / tot["revenue"] if tot["revenue"] else 0), None),
+            ("Gross margin", pctv(tot["gross_profit"] / tot["revenue"] if tot["revenue"] else 0), "Gross profit ÷ revenue"),
             ("Discount %", pctv(tot["discounts"] / tot["gross_sales"] if tot["gross_sales"] else 0), "Discounts ÷ gross sales"),
         ])
         cat = agg.groupby("category").agg(revenue=("revenue", "sum"), units=("units", "sum"),
@@ -844,7 +862,13 @@ def page_product():
         cat["GM £"] = cat["gross_profit"].map(money)
         cat["Units"] = cat["units"].map(num)
         st.dataframe(cat[["category", "Revenue", "Units", "ASP", "Disc %", "GM %", "GM £"]]
-                     .rename(columns={"category": "Category"}), use_container_width=True, hide_index=True)
+                     .rename(columns={"category": "Category"}), use_container_width=True, hide_index=True,
+                     column_config=_tips({
+                         "ASP": "Average selling price = Revenue ÷ Units",
+                         "Disc %": "Discounts ÷ gross sales",
+                         "GM %": "Gross profit ÷ revenue",
+                         "GM £": "Revenue minus COGS",
+                     }))
     with t2:
         f = agg.copy()
         f["ATC %"] = (f["atc"] / f["views"].replace(0, np.nan) * 100).round(1)
@@ -855,7 +879,11 @@ def page_product():
         for c in ["Views", "Add to Carts", "Units"]:
             show[c] = show[c].map(num)
         st.caption("Product-level funnel: views → add-to-cart rate → conversion.")
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, use_container_width=True, hide_index=True, column_config=_tips({
+            "Views": "GA4 product page views",
+            "ATC %": "Add to carts ÷ views",
+            "Conversion %": "Units sold ÷ views",
+        }))
     with t3:
         s = agg.copy()
         s["weeks_cover"] = (s["on_hand"] / (s["units"] / weeks).replace(0, np.nan)).round(1)
@@ -863,14 +891,16 @@ def page_product():
         metrics_row([
             ("In-stock availability", pctv(avail), "Share of products with stock on hand"),
             ("Avg weeks cover", ratio(s["weeks_cover"].replace([np.inf], np.nan).mean()), "On hand ÷ weekly sell-through"),
-            ("Out of stock", num((s["on_hand"] <= 0).sum()), None),
+            ("Out of stock", num((s["on_hand"] <= 0).sum()), "Products currently showing zero units on hand"),
         ])
         low = s[(s["weeks_cover"] <= 3) | (s["on_hand"] <= 0)].sort_values("weeks_cover")
         st.caption("Products with ≤ 3 weeks cover (or out of stock) at the current rate.")
         show = low[["product_title", "category", "on_hand", "weeks_cover"]].head(20).copy()
         show.columns = ["Product", "Category", "On hand", "Weeks cover"]
         show["On hand"] = show["On hand"].map(num)
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, use_container_width=True, hide_index=True, column_config=_tips({
+            "Weeks cover": "On hand ÷ average weekly units sold — weeks of stock left at this rate",
+        }))
         if low.empty:
             st.success("No products low on stock. 🎉")
     with t4:
@@ -879,7 +909,7 @@ def page_product():
         metrics_row([
             ("Return rate (items)", pctv(tot_r / tot_u if tot_u else 0), "Returned units ÷ units sold"),
             ("Return rate (value)", pctv(tot_ref / tot_rev if tot_rev else 0), "Refund value ÷ revenue"),
-            ("Refunds", money(tot_ref), None),
+            ("Refunds", money(tot_ref), "Total refund value for returns in this period"),
         ])
         r["Return %"] = (r["returned"] / r["units"].replace(0, np.nan) * 100).round(1)
         worst = r[r["returned"] > 0].sort_values("Return %", ascending=False).head(15)
@@ -887,7 +917,9 @@ def page_product():
         show.columns = ["Product", "Category", "Units", "Returned", "Return %"]
         show["Units"] = show["Units"].map(num)
         show["Returned"] = show["Returned"].map(num)
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, use_container_width=True, hide_index=True, column_config=_tips({
+            "Return %": "Returned units ÷ units sold, for this product",
+        }))
         rets = get_returns()
         if rets is not None and not rets.empty:
             rr = _filt(_in_period(rets), filters)
@@ -908,7 +940,7 @@ def page_paid_media():
         return
     spend = paid["spend"].sum()
     metrics_row([
-        ("Total spend", money(spend), None),
+        ("Total spend", money(spend), "Total ad spend across all platforms"),
         ("Blended MER", ratio(total_rev / spend) if spend else "—", "Total revenue ÷ total ad spend"),
         ("Blended CAC", money(spend / orders) if orders else "—", "Spend ÷ orders"),
         ("Platform ROAS", ratio(paid["platform_conversion_value_7d"].sum() / spend) if spend else "—",
@@ -927,7 +959,13 @@ def page_paid_media():
     show.columns = ["Platform", "Spend", "Conversions", "ROAS", "CTR %", "CPC", "CPA"]
     show["Spend"] = show["Spend"].map(money)
     show["Conversions"] = show["Conversions"].map(num)
-    st.dataframe(show, use_container_width=True, hide_index=True)
+    st.dataframe(show, use_container_width=True, hide_index=True, column_config=_tips({
+        "Conversions": "Platform-reported conversions (7-day window)",
+        "ROAS": "Platform-reported conversion value ÷ spend",
+        "CTR %": "Clicks ÷ impressions",
+        "CPC": "Spend ÷ clicks",
+        "CPA": "Spend ÷ conversions",
+    }))
     st.caption("Channel truth: these are *platform-reported* conversions (Meta/Google over-report). "
                "True channel-level revenue needs GA4→sales reconciliation — a next step.")
 
@@ -945,11 +983,11 @@ def page_seo():
     if s.empty:
         _empty()
         return
-    metrics_row([("Clicks", num(s["clicks"].sum()), None),
-                 ("Impressions", num(s["impressions"].sum()), None),
-                 ("Avg position", ratio(s["position"].mean()), "Lower is better"),
+    metrics_row([("Clicks", num(s["clicks"].sum()), "Organic search clicks (Search Console)"),
+                 ("Impressions", num(s["impressions"].sum()), "Times your pages appeared in search results"),
+                 ("Avg position", ratio(s["position"].mean()), "Average search ranking position — lower is better"),
                  ("CTR", pctv(s["clicks"].sum() / s["impressions"].sum()
-                  if s["impressions"].sum() else 0, 2), None)])
+                  if s["impressions"].sum() else 0, 2), "Clicks ÷ impressions")])
     if "branded" in s:
         b = s.groupby("branded").agg(clicks=("clicks", "sum")).reset_index()
         b["branded"] = b["branded"].map({True: "Branded", False: "Non-branded"})
@@ -960,7 +998,9 @@ def page_seo():
     q["clicks"] = q["clicks"].map(num)
     q["impressions"] = q["impressions"].map(num)
     q.columns = ["Query", "Clicks", "Impressions", "Avg position"]
-    st.dataframe(q, use_container_width=True, hide_index=True)
+    st.dataframe(q, use_container_width=True, hide_index=True, column_config=_tips({
+        "Avg position": "Average ranking position for this query — lower is better",
+    }))
 
 
 # ── Forecast & Pacing (Perf vs Budget + run-rate) ────────────────
@@ -985,7 +1025,13 @@ def page_forecast():
                 "LY": sem.fmt(m, lyv),
                 "v LY": fmt_pct((actual / lyv - 1) * 100) if lyv else "—",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config=_tips({
+            "Actual": "Total for the selected period",
+            "Budget": "Target set for the same period",
+            "v Budget": "Actual vs Budget, %",
+            "LY": "Same period last year",
+            "v LY": "Actual vs last year, %",
+        }))
     with t2:
         st.caption("Pacing the current month to a linear run-rate.")
         month_start = ref.replace(day=1)
@@ -1001,7 +1047,12 @@ def page_forecast():
                          "Projected month": sem.fmt(m, proj),
                          "Month budget": sem.fmt(m, tgt) if tgt else "—",
                          "Projected vs budget": fmt_pct((proj / tgt - 1) * 100) if tgt else "—"})
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config=_tips({
+            "MTD actual": "Actual total, month to date",
+            "Projected month": "MTD actual ÷ days elapsed × days in month — a straight-line projection",
+            "Month budget": "Target for the full month",
+            "Projected vs budget": "Projected month-end vs the month's budget, %",
+        }))
         st.caption(f"Day {elapsed} of {dim}. Linear run-rate projection.")
 
 
@@ -1017,8 +1068,8 @@ def page_orderbank():
     snap = ob[ob["date"] == latest]
     metrics_row([
         ("Open value", money(snap["open_value"].sum()), "Value of orders not yet invoiced"),
-        ("Open orders", num(snap["open_orders"].sum()), None),
-        ("Open items", num(snap["open_items"].sum()), None),
+        ("Open orders", num(snap["open_orders"].sum()), "Number of orders taken but not yet invoiced"),
+        ("Open items", num(snap["open_items"].sum()), "Units within those open orders"),
     ])
     c1, c2 = st.columns(2)
     with c1:
@@ -1047,14 +1098,16 @@ def page_order_insight():
         return
     orders = l.groupby("order_id").agg(value=("net_sales", "sum"), items=("quantity", "sum")).reset_index()
     metrics_row([
-        ("Orders", num(len(orders)), None),
-        ("AOV", money(orders["value"].mean()), None),
+        ("Orders", num(len(orders)), "Orders placed in this period"),
+        ("AOV", money(orders["value"].mean()), "Average order value = Revenue ÷ Orders"),
         ("Median order", money(orders["value"].median()), "Half of orders are below this"),
         ("P90 order", money(orders["value"].quantile(0.9)), "Top 10% of orders exceed this"),
     ])
-    metrics_row([("Avg items / order", ratio(orders["items"].mean()), None),
-                 ("Single-item orders", pctv((orders["items"] == 1).mean()), None),
-                 ("Units sold", num(l["quantity"].sum()), None)])
+    metrics_row([
+        ("Avg items / order", ratio(orders["items"].mean()), "Units ÷ orders"),
+        ("Single-item orders", pctv((orders["items"] == 1).mean()), "Share of orders containing exactly one item"),
+        ("Units sold", num(l["quantity"].sum()), "Total units across all orders in this period"),
+    ])
     st.markdown("**Order value distribution**")
     hist = alt.Chart(orders).mark_bar(color="#2563EB", opacity=0.8).encode(
         x=alt.X("value:Q", bin=alt.Bin(maxbins=40), title="Order value (£)"),
@@ -1145,7 +1198,11 @@ def page_benchmarks():
             gap = -gap if gap is not None else None
         rows.append({"Metric": sem.nice(m), "You": sem.fmt(m, actual),
                      "Benchmark": sem.fmt(m, bench), "vs Benchmark": fmt_pct(gap)})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config=_tips({
+        "You": "Your actual value for the selected period",
+        "Benchmark": "Illustrative category benchmark",
+        "vs Benchmark": "% difference vs benchmark — positive always means better, direction-aware",
+    }))
     st.caption("Positive = better than benchmark (direction-aware for cost/abandonment metrics).")
 
 
