@@ -61,10 +61,13 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-chil
 [data-testid="stVerticalBlockBorderWrapper"]:hover { box-shadow:0 6px 20px rgba(17,24,39,0.08); transform:translateY(-2px); }
 .kpi-name { font-size:11px; color:#64748B; font-weight:600; text-transform:uppercase; letter-spacing:0.06em; }
 .kpi-value { font-family:'DM Serif Display',serif; font-size:30px; color:#111827; line-height:1.1; margin:2px 0 8px; }
-[data-testid="stPopover"] button { padding:0 4px !important; min-height:auto !important; height:22px !important;
-  background:transparent !important; color:#94A3B8 !important; border:none !important; font-size:13px !important;
-  box-shadow:none !important; }
+[data-testid="stPopover"] { width:auto !important; }
+[data-testid="stPopover"] > div { width:auto !important; }
+[data-testid="stPopover"] button { width:auto !important; min-width:0 !important; padding:0 !important;
+  min-height:auto !important; height:20px !important; background:transparent !important; color:#94A3B8 !important;
+  border:none !important; font-size:13px !important; box-shadow:none !important; }
 [data-testid="stPopover"] button:hover { color:#2563EB !important; background:transparent !important; transform:none !important; }
+[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stHorizontalBlock"] { align-items:center; margin-bottom:-16px; }
 .pill { display:inline-block; border-radius:999px; padding:3px 10px; font-size:11px; font-weight:700; margin:0 6px 4px 0; white-space:nowrap; }
 .pill.up { background:#DCFCE7; color:#15803D; }
 .pill.down { background:#FEE2E2; color:#B91C1C; }
@@ -355,7 +358,7 @@ ICONS = {
     "Connect sources": "🔌", "Targets": "🎚️",
 }
 BASE_DESC = {
-    "revenue": "Net sales after discounts, before returns (Shopify is the source of truth).",
+    "revenue": "Total revenue taken from customers — after discounts, before returns.",
     "gross_sales": "Sales before discounts.",
     "discounts": "Total discount value given away.",
     "cogs": "Cost of goods sold.",
@@ -590,10 +593,10 @@ def _kpi_card(row):
     if row.get("target") is not None:  # only show the target pill when a target exists
         pills += _pill(m, row["vtarg_pct"], "Targ")
     with st.container(border=True):
-        hc1, hc2 = st.columns([6, 1], gap="small")
+        hc1, hc2 = st.columns([10, 1], gap="small")
         hc1.markdown(f'<span class="kpi-name">{sem.nice(m)}</span>', unsafe_allow_html=True)
         with hc2:
-            with st.popover("ⓘ", use_container_width=True):
+            with st.popover("ⓘ"):
                 st.markdown(f"**{sem.nice(m)}**")
                 st.caption(metric_help(m))
         st.markdown(
