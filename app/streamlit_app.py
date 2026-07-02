@@ -99,13 +99,13 @@ ALL_KPIS = [m for g in KPI_GROUPS.values() for m in g]
 
 SECTIONS = {
     "Reports": ["eCommerce", "Profitability", "Customers", "Product", "Acquisition",
-                "Forecast", "Orderbank"],
+                "Forecast"],
     "Analysis": ["Order Insight"],
     "Intelligence": ["Exec Digest", "AI Analyst", "Benchmarks", "Data Trust"],
     "Utility": ["Data Table", "Connect sources", "Targets"],
 }
 PERIOD_PAGES = {"eCommerce", "Profitability", "Customers", "Product", "Acquisition",
-                "Forecast", "Orderbank", "Order Insight", "Benchmarks", "Data Table",
+                "Forecast", "Order Insight", "Benchmarks", "Data Table",
                 "Exec Digest", "AI Analyst"}
 
 # Filters relevant to each report (not the same set everywhere).
@@ -122,7 +122,6 @@ PAGE_FILTERS = {
     "Product": ["category"],
     "Order Insight": ["category"],
     "Customers": [],
-    "Orderbank": [],
 }
 
 
@@ -1131,7 +1130,6 @@ PAGES = {
     "eCommerce": page_report, "Profitability": page_profitability,
     "Customers": page_customers, "Product": page_product,
     "Acquisition": page_acquisition, "Forecast": page_forecast,
-    "Orderbank": page_orderbank,
     "Order Insight": page_order_insight, "Exec Digest": page_exec_digest,
     "AI Analyst": page_ai_analyst, "Benchmarks": page_benchmarks,
     "Data Trust": page_data_trust, "Data Table": page_data_table,
