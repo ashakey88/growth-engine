@@ -170,9 +170,15 @@ def trend(df, metric: str, freq: str = "D") -> pd.DataFrame:
 
 # ── KPI comparison engine (TY / LY / target) ─────────────────────
 def _pct(cur, cmp):
-    if cmp in (None, 0) or pd.isna(cmp):
+    if cmp in (None, 0) or pd.isna(cmp) or cur is None or pd.isna(cur):
         return None
     return (cur / cmp - 1) * 100
+
+
+def pct_change(cur, cmp):
+    """Public % change helper for callers outside this module: None-safe and
+    NaN-safe in both directions (returns None rather than NaN/inf)."""
+    return _pct(cur, cmp)
 
 
 def kpi_rows(fact, metrics, cur, cmp, targets, filters=None) -> list[dict]:
@@ -227,8 +233,11 @@ def sparkline(fact, metric, start, end, filters=None) -> pd.DataFrame:
         return empty
 
 
-def comparison_table(fact, dimension, metrics, cur, cmp, filters=None) -> pd.DataFrame:
-    """Per dimension value: current, comparison and % change for each metric."""
+def comparison_table(fact, dimension, metrics, cur, cmp, filters=None, include_total=True) -> pd.DataFrame:
+    """Per dimension value: current, comparison and % change for each metric.
+    When include_total, appends a 'Total' row computed from the whole-period
+    totals (not summed from the per-row ratios — summing e.g. AOV or conversion
+    rate across rows would be wrong; recomputing from base sums is correct)."""
     cur_df = apply_filters(fact, cur[0], cur[1], filters)
     cmp_df = apply_filters(fact, cmp[0], cmp[1], filters)
     a = aggregate(cur_df, [dimension], metrics).set_index(dimension)
@@ -241,7 +250,15 @@ def comparison_table(fact, dimension, metrics, cur, cmp, filters=None) -> pd.Dat
                             for i in range(len(idx))]
     if metrics:
         out = out.sort_values(metrics[0], ascending=False)
-    return out.reset_index().rename(columns={"index": dimension})
+    out = out.reset_index().rename(columns={"index": dimension})
+    if include_total:
+        cur_t, cmp_t = totals(cur_df, metrics), totals(cmp_df, metrics)
+        total_row = {dimension: "Total"}
+        for m in metrics:
+            total_row[m] = cur_t[m]
+            total_row[f"{m}__vs%"] = _pct(cur_t[m], cmp_t[m])
+        out = pd.concat([out, pd.DataFrame([total_row])], ignore_index=True)
+    return out
 
 
 # ── Targets ──────────────────────────────────────────────────────

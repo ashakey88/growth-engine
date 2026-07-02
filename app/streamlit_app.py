@@ -86,6 +86,19 @@ section[data-testid="stSidebar"] div[role="radiogroup"] > label > div:first-chil
 .stTabs [data-baseweb="tab-highlight"] { background:#2563EB; height:2px; }
 [data-testid="stDataFrame"] { border:1px solid #E4E8EF; border-radius:10px; }
 .ml-footer { color:#94A3B8; font-size:12px; text-align:center; margin-top:40px; padding-top:16px; border-top:1px solid #E4E8EF; }
+
+/* Small HTML tables (used where a row label itself needs a real hover tooltip,
+   e.g. a "Metric" column listing AOV/ROAS/etc. — st.dataframe can't do per-cell
+   tooltips, so these render as plain HTML with a title attribute). */
+.ml-html-table { width:100%; border-collapse:collapse; font-size:14px; margin:4px 0 8px; }
+.ml-html-table th { text-align:left; font-size:12px; font-weight:600; color:#64748B;
+  border-bottom:1px solid #E4E8EF; padding:8px 10px; white-space:nowrap; }
+.ml-html-table td { padding:8px 10px; border-bottom:1px solid #F1F3F7; color:#111827; }
+.ml-html-table tr:last-child td { border-bottom:none; }
+.ml-html-table tr.ml-total td { font-weight:700; border-top:1.5px solid #CBD2DE; background:#F7F8FA; }
+.ml-tip { border-bottom:1px dotted #94A3B8; cursor:help; }
+.ml-up { color:#15803D; font-weight:600; }
+.ml-down { color:#B91C1C; font-weight:600; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -201,6 +214,11 @@ def money(v):
     return "—" if v is None or v != v else f"£{v:,.0f}"
 
 
+def money2(v):
+    """2dp currency — for small per-unit values (e.g. revenue per recipient)."""
+    return "—" if v is None or v != v else f"£{v:,.2f}"
+
+
 def num(v):
     return "—" if v is None or v != v else f"{v:,.0f}"
 
@@ -214,10 +232,20 @@ def ratio(v):
 
 
 def metrics_row(items):
-    """items: list of (label, value_str, help_or_None)."""
+    """items: list of (label, value_str, help_or_None) or, to show a vs-period
+    change arrow, (label, value_str, help_or_None, delta_pct_or_None,
+    direction) where direction is 'standard' (higher=good, default) or
+    'reverse' (higher=bad, e.g. spend, returns, CAC)."""
     cols = st.columns(len(items))
     for c, it in zip(cols, items):
-        c.metric(it[0], it[1], help=it[2] if len(it) > 2 else None)
+        help_ = it[2] if len(it) > 2 else None
+        delta = None
+        delta_color = "normal"
+        if len(it) > 3 and it[3] is not None:
+            delta = f"{it[3]:+.0f}%"
+            direction = it[4] if len(it) > 4 else "standard"
+            delta_color = "inverse" if direction == "reverse" else "normal"
+        c.metric(it[0], it[1], delta=delta, delta_color=delta_color, help=help_)
 
 
 def _tips(help_map: dict):
@@ -225,9 +253,70 @@ def _tips(help_map: dict):
     return {c: st.column_config.Column(help=h) for c, h in help_map.items()}
 
 
-def _in_period(df, col="date"):
-    m = (df[col] >= pd.Timestamp(cur[0])) & (df[col] <= pd.Timestamp(cur[1]))
+def _metric_direction(metric: str) -> str:
+    """'reverse' if higher is worse for this metric, else 'standard'."""
+    try:
+        return "reverse" if sem.metric_meta(metric).get("cf") == "reverse" else "standard"
+    except Exception:
+        return "standard"
+
+
+def _pct_color_class(formatted: str, direction: str = "standard") -> str:
+    """Colour class for a signed-% string like '+12%'/'-5%'. direction=
+    'standard' means positive is good; 'reverse' means negative is good.
+    Returns '' for anything that isn't a signed percentage."""
+    if not formatted or formatted[0] not in "+-":
+        return ""
+    good = formatted.startswith("-") if direction == "reverse" else formatted.startswith("+")
+    return "ml-up" if good else "ml-down"
+
+
+def _html_table(rows: list[dict], key_field: str, tip_lookup, pct_cols=()):
+    """Render `rows` as a small HTML table so the first column (typically a
+    metric name like 'AOV') can carry a real hover tooltip — st.dataframe has
+    no way to attach a tooltip to an individual cell. Each row dict needs a
+    `key_field` entry holding the raw metric id (used for the tooltip text and
+    to auto-pick colour direction); it is not rendered as a column.
+    `tip_lookup(key)` returns the definition string for that key.
+    `pct_cols` colour-codes columns of signed-% strings: pass a plain column
+    name to auto-derive direction from the row's metric, or (name, 'standard'|
+    'reverse') to force a direction (e.g. when the % was pre direction-corrected)."""
+    if not rows:
+        return
+    pct_map = {(pc[0] if isinstance(pc, tuple) else pc):
+               (pc[1] if isinstance(pc, tuple) else None) for pc in pct_cols}
+    cols = [c for c in rows[0].keys() if c != key_field]
+    thead = "".join(f"<th>{c}</th>" for c in cols)
+    body = ""
+    for r in rows:
+        key = r.get(key_field)
+        cells = ""
+        for i, c in enumerate(cols):
+            val = r.get(c, "—")
+            if i == 0 and key is not None:
+                cells += f'<td><span class="ml-tip" title="{tip_lookup(key)}">{val}</span></td>'
+            elif c in pct_map:
+                direction = pct_map[c] or _metric_direction(key)
+                cls = _pct_color_class(str(val), direction)
+                cells += f'<td class="{cls}">{val}</td>' if cls else f"<td>{val}</td>"
+            else:
+                cells += f"<td>{val}</td>"
+        body += f"<tr>{cells}</tr>"
+    st.markdown(f'<table class="ml-html-table"><thead><tr>{thead}</tr></thead>'
+                f'<tbody>{body}</tbody></table>', unsafe_allow_html=True)
+
+
+def _in_range(df, start, end, col="date"):
+    m = (df[col] >= pd.Timestamp(start)) & (df[col] <= pd.Timestamp(end))
     return df[m]
+
+
+def _in_period(df, col="date"):
+    return _in_range(df, cur[0], cur[1], col)
+
+
+def _vs_pct(cur_val, cmp_val):
+    return analytics.pct_change(cur_val, cmp_val)
 
 
 def _filter_options(dim):
@@ -477,21 +566,39 @@ def _empty(msg="No data for this period and these filters."):
     st.info(f"🔍 {msg} Try a wider period or clearing filters.")
 
 
+_TOTAL_ROW_STYLE = "font-weight:700;background-color:#F7F8FA;border-top:1.5px solid #CBD2DE;"
+
+
+def _style_pct_cell(val, direction):
+    cls = _pct_color_class(str(val), direction)
+    if cls == "ml-up":
+        return "color:#15803D;font-weight:600;"
+    if cls == "ml-down":
+        return "color:#B91C1C;font-weight:600;"
+    return ""
+
+
 def _comparison_section(dimension, metrics):
     view = analytics.apply_filters(fact, cur[0], cur[1], filters)
     if view.empty:
         _empty()
         return
+    dcol = sem.nice(dimension)
     tbl = analytics.comparison_table(fact, dimension, metrics, cur, cmp, filters)
-    disp = pd.DataFrame({sem.nice(dimension): tbl[dimension]})
-    tips = {}
+    disp = pd.DataFrame({dcol: tbl[dimension]})
+    tips, vs_cols = {}, {}
     for m in metrics:
         mcol, vcol = sem.nice(m), f"{sem.nice(m)} vs {cmp_label}"
         disp[mcol] = tbl[m].map(lambda v, mm=m: sem.fmt(mm, v))
         disp[vcol] = tbl[f"{m}__vs%"].map(fmt_pct)
         tips[mcol] = metric_help(m)
         tips[vcol] = f"Change vs {'last year' if cmp_label == 'LY' else 'the prior period'}"
-    st.dataframe(disp, use_container_width=True, hide_index=True, column_config=_tips(tips))
+        vs_cols[vcol] = _metric_direction(m)
+    styler = disp.style.apply(
+        lambda row: [_TOTAL_ROW_STYLE if row[dcol] == "Total" else "" for _ in row], axis=1)
+    for vcol, direction in vs_cols.items():
+        styler = styler.map(lambda v, d=direction: _style_pct_cell(v, d), subset=[vcol])
+    st.dataframe(styler, use_container_width=True, hide_index=True, column_config=_tips(tips))
 
 
 BIZ = ["revenue", "visits", "orders", "conversion_rate", "aov", "spend", "roas"]
@@ -754,16 +861,32 @@ def page_customers():
     ltv = o.groupby("customer_id")["net_sales"].sum().mean()
     spend = analytics.totals(analytics.apply_filters(fact, cur[0], cur[1], filters), ["spend"])["spend"]
     cac = spend / new if new else None
+
+    cp = o[(o["date"] >= pd.Timestamp(cmp[0])) & (o["date"] <= pd.Timestamp(cmp[1]))]
+    if not cp.empty:
+        cmp_custs = cp["customer_id"].nunique()
+        cmp_is_new = cp["first_order"].between(pd.Timestamp(cmp[0]), pd.Timestamp(cmp[1]))
+        cmp_new = cp.loc[cmp_is_new, "customer_id"].nunique()
+        cmp_orders_ct, cmp_revenue = len(cp), cp["net_sales"].sum()
+        cmp_spend = analytics.totals(analytics.apply_filters(fact, cmp[0], cmp[1], filters), ["spend"])["spend"]
+        cmp_cac = cmp_spend / cmp_new if cmp_new else None
+    else:
+        cmp_custs = cmp_new = cmp_orders_ct = cmp_revenue = cmp_cac = None
+
     metrics_row([
-        ("Customers", num(custs), "Distinct customers who ordered this period"),
-        ("New customers", num(new), "First-ever order fell in this period"),
-        ("Repeat rate", pctv((custs - new) / custs if custs else 0), "Returning ÷ all customers"),
-        ("Orders / customer", ratio(orders_ct / custs if custs else 0), "Orders this period ÷ customers who ordered"),
+        ("Customers", num(custs), "Distinct customers who ordered this period", _vs_pct(custs, cmp_custs)),
+        ("New customers", num(new), "First-ever order fell in this period", _vs_pct(new, cmp_new)),
+        ("Repeat rate", pctv((custs - new) / custs if custs else None), "Returning ÷ all customers",
+         _vs_pct((custs - new) / custs if custs else None,
+                (cmp_custs - cmp_new) / cmp_custs if cmp_custs else None)),
+        ("Orders / customer", ratio(orders_ct / custs if custs else None), "Orders this period ÷ customers who ordered",
+         _vs_pct(orders_ct / custs if custs else None, cmp_orders_ct / cmp_custs if cmp_custs else None)),
     ])
     metrics_row([
-        ("AOV", money(revenue / orders_ct if orders_ct else 0), "Average order value = Revenue ÷ Orders"),
+        ("AOV", money(revenue / orders_ct if orders_ct else None), "Average order value = Revenue ÷ Orders",
+         _vs_pct(revenue / orders_ct if orders_ct else None, cmp_revenue / cmp_orders_ct if cmp_orders_ct else None)),
         ("Avg LTV", money(ltv), "Average lifetime net revenue per customer"),
-        ("Blended CAC", money(cac), "Marketing spend ÷ new customers"),
+        ("Blended CAC", money(cac), "Marketing spend ÷ new customers", _vs_pct(cac, cmp_cac), "reverse"),
         ("LTV : CAC", ratio(ltv / cac) if cac else "—", "Above 3 is healthy"),
     ])
     t1, t2, t3 = st.tabs(["New vs returning", "Cohort retention", "Email / CRM"])
@@ -791,24 +914,31 @@ def page_customers():
             st.info("🔌 Connect Klaviyo to light up the Email / CRM section.")
         else:
             e = _in_period(em)
+            e_cmp = _in_range(em, cmp[0], cmp[1])
             g = e.groupby(["type", "name"]).agg(recipients=("recipients", "sum"),
                 orders=("orders", "sum"), revenue=("revenue", "sum")).reset_index()
-            g["rev / recipient"] = g["revenue"] / g["recipients"]
+            g["rev / recipient"] = g["revenue"] / g["recipients"].replace(0, np.nan)
+            tot_rev, tot_recip, tot_ord = g["revenue"].sum(), g["recipients"].sum(), g["orders"].sum()
+            cmp_rev = e_cmp["revenue"].sum() if not e_cmp.empty else None
             metrics_row([
-                ("Email revenue", money(g["revenue"].sum()),
-                 "Revenue attributed to Klaviyo flows and campaigns"),
-                ("Email orders", num(g["orders"].sum()),
-                 "Orders attributed to Klaviyo flows and campaigns"),
-                ("Rev / recipient", money(g["revenue"].sum() / g["recipients"].sum()
-                 if g["recipients"].sum() else 0), "Email revenue ÷ recipients — efficiency per send"),
+                ("Email revenue", money(tot_rev), "Revenue attributed to Klaviyo flows and campaigns",
+                 _vs_pct(tot_rev, cmp_rev)),
+                ("Email orders", num(tot_ord), "Orders attributed to Klaviyo flows and campaigns"),
+                ("Rev / recipient", money2(tot_rev / tot_recip if tot_recip else None),
+                 "Email revenue ÷ recipients — efficiency per send"),
             ])
             disp = g.sort_values("revenue", ascending=False).copy()
             disp["revenue"] = disp["revenue"].map(money)
-            disp["rev / recipient"] = disp["rev / recipient"].map(lambda v: f"£{v:,.2f}")
+            disp["rev / recipient"] = disp["rev / recipient"].map(money2)
             disp["recipients"] = disp["recipients"].map(num)
             disp["orders"] = disp["orders"].map(num)
             disp.columns = ["Type", "Name", "Recipients", "Orders", "Revenue", "Rev / Recipient"]
-            st.dataframe(disp, use_container_width=True, hide_index=True, column_config=_tips({
+            total_row = {"Type": "Total", "Name": "", "Recipients": num(tot_recip), "Orders": num(tot_ord),
+                        "Revenue": money(tot_rev), "Rev / Recipient": money2(tot_rev / tot_recip if tot_recip else None)}
+            disp = pd.concat([disp, pd.DataFrame([total_row])], ignore_index=True)
+            styler = disp.style.apply(
+                lambda row: [_TOTAL_ROW_STYLE if row["Type"] == "Total" else "" for _ in row], axis=1)
+            st.dataframe(styler, use_container_width=True, hide_index=True, column_config=_tips({
                 "Type": "Flow (always-on) or one-off campaign",
                 "Recipients": "Number of people the send reached",
                 "Rev / Recipient": "Revenue ÷ recipients — efficiency per send",
@@ -816,6 +946,22 @@ def page_customers():
 
 
 # ── Product / Merchandising ──────────────────────────────────────
+_PRODUCT_EXTRA_COLS = ["product_views", "product_add_to_carts", "on_hand", "returned_units", "refund_amount"]
+
+
+def _product_agg(df):
+    for c in _PRODUCT_EXTRA_COLS:
+        if c not in df:
+            df[c] = 0
+    return df.groupby(["product_id", "product_title", "category"]).agg(
+        units=("units", "sum"), revenue=("revenue", "sum"), gross_sales=("gross_sales", "sum"),
+        discounts=("discounts", "sum"), gross_profit=("gross_profit", "sum"),
+        views=("product_views", "sum"), atc=("product_add_to_carts", "sum"),
+        on_hand=("on_hand", "last"), returned=("returned_units", "sum"),
+        refund=("refund_amount", "sum"),
+    ).reset_index().fillna(0)
+
+
 def page_product():
     _report_top("Product / Merchandising", "📦")
     fp = get_product_fact()
@@ -826,98 +972,181 @@ def page_product():
     if p.empty:
         _empty()
         return
-    for c in ["product_views", "product_add_to_carts", "on_hand", "returned_units", "refund_amount"]:
-        if c not in p:
-            p[c] = 0
-    agg = p.groupby(["product_id", "product_title", "category"]).agg(
-        units=("units", "sum"), revenue=("revenue", "sum"), gross_sales=("gross_sales", "sum"),
-        discounts=("discounts", "sum"), gross_profit=("gross_profit", "sum"),
-        views=("product_views", "sum"), atc=("product_add_to_carts", "sum"),
-        on_hand=("on_hand", "last"), returned=("returned_units", "sum"),
-        refund=("refund_amount", "sum"),
-    ).reset_index().fillna(0)
+    agg = _product_agg(p)
     weeks = max(1.0, ((cur[1] - cur[0]).days + 1) / 7)
 
-    def _asp(d):
-        return d["revenue"] / d["units"].replace(0, np.nan)
+    p_cmp = _filt(_in_range(fp, cmp[0], cmp[1]), filters)
+    agg_cmp = _product_agg(p_cmp) if not p_cmp.empty else agg.iloc[0:0].copy()
+    vs_label = f"vs {cmp_label}"
+    cmp_note = "last year" if cmp_label == "LY" else "the prior period"
 
     t1, t2, t3, t4 = st.tabs(["Sales & Margin", "Funnel", "Stock", "Returns"])
+
+    # ── Sales & Margin ────────────────────────────────────────────
     with t1:
         tot = agg[["revenue", "units", "gross_sales", "discounts", "gross_profit"]].sum()
+        cmp_tot = (agg_cmp[["revenue", "gross_sales", "discounts", "gross_profit"]].sum()
+                  if not agg_cmp.empty else None)
+        cmp_disc_pct = (cmp_tot["discounts"] / cmp_tot["gross_sales"]
+                       if cmp_tot is not None and cmp_tot["gross_sales"] else None)
         metrics_row([
-            ("Revenue", money(tot["revenue"]), "Total product revenue in this period"),
+            ("Revenue", money(tot["revenue"]), "Total product revenue in this period",
+             _vs_pct(tot["revenue"], cmp_tot["revenue"] if cmp_tot is not None else None)),
             ("Units", num(tot["units"]), "Total units sold"),
-            ("ASP", money(tot["revenue"] / tot["units"] if tot["units"] else 0), "Average selling price = Revenue ÷ Units"),
-            ("Gross margin", pctv(tot["gross_profit"] / tot["revenue"] if tot["revenue"] else 0), "Gross profit ÷ revenue"),
-            ("Discount %", pctv(tot["discounts"] / tot["gross_sales"] if tot["gross_sales"] else 0), "Discounts ÷ gross sales"),
+            ("ASP", money(tot["revenue"] / tot["units"] if tot["units"] else None), "Average selling price = Revenue ÷ Units"),
+            ("Gross margin", pctv(tot["gross_profit"] / tot["revenue"] if tot["revenue"] else None), "Gross profit ÷ revenue",
+             _vs_pct(tot["gross_profit"] / tot["revenue"] if tot["revenue"] else None,
+                    cmp_tot["gross_profit"] / cmp_tot["revenue"] if cmp_tot is not None and cmp_tot["revenue"] else None)),
+            ("Discount %", pctv(tot["discounts"] / tot["gross_sales"] if tot["gross_sales"] else None), "Discounts ÷ gross sales",
+             _vs_pct(tot["discounts"] / tot["gross_sales"] if tot["gross_sales"] else None, cmp_disc_pct), "reverse"),
         ])
         cat = agg.groupby("category").agg(revenue=("revenue", "sum"), units=("units", "sum"),
             gross_sales=("gross_sales", "sum"), discounts=("discounts", "sum"),
             gross_profit=("gross_profit", "sum")).reset_index()
         st.bar_chart(cat.set_index("category"), y="revenue", height=240)
-        cat["ASP"] = (cat["revenue"] / cat["units"]).map(money)
-        cat["Disc %"] = (cat["discounts"] / cat["gross_sales"] * 100).round(1)
-        cat["GM %"] = (cat["gross_profit"] / cat["revenue"] * 100).round(1)
-        cat["Revenue"] = cat["revenue"].map(money)
-        cat["GM £"] = cat["gross_profit"].map(money)
-        cat["Units"] = cat["units"].map(num)
-        st.dataframe(cat[["category", "Revenue", "Units", "ASP", "Disc %", "GM %", "GM £"]]
-                     .rename(columns={"category": "Category"}), use_container_width=True, hide_index=True,
-                     column_config=_tips({
-                         "ASP": "Average selling price = Revenue ÷ Units",
-                         "Disc %": "Discounts ÷ gross sales",
-                         "GM %": "Gross profit ÷ revenue",
-                         "GM £": "Revenue minus COGS",
-                     }))
+
+        cat_cmp = (agg_cmp.groupby("category").agg(revenue=("revenue", "sum"),
+                   gross_profit=("gross_profit", "sum")).to_dict("index") if not agg_cmp.empty else {})
+        vcol_rev, vcol_gm = f"Revenue {vs_label}", f"GM % {vs_label}"
+        disp = pd.DataFrame({"Category": cat["category"]})
+        disp["Revenue"] = cat["revenue"].map(money)
+        disp["Units"] = cat["units"].map(num)
+        disp["ASP"] = (cat["revenue"] / cat["units"].replace(0, np.nan)).map(money)
+        disp["Disc %"] = (cat["discounts"] / cat["gross_sales"].replace(0, np.nan)).map(pctv)
+        disp["GM %"] = (cat["gross_profit"] / cat["revenue"].replace(0, np.nan)).map(pctv)
+        disp["GM £"] = cat["gross_profit"].map(money)
+        disp[vcol_rev] = [fmt_pct(_vs_pct(rev, cat_cmp.get(c, {}).get("revenue")))
+                          for c, rev in zip(cat["category"], cat["revenue"])]
+        disp[vcol_gm] = [
+            fmt_pct(_vs_pct((gp / rev) if rev else None,
+                           (cat_cmp.get(c, {}).get("gross_profit") / cat_cmp.get(c, {}).get("revenue"))
+                           if cat_cmp.get(c, {}).get("revenue") else None))
+            for c, rev, gp in zip(cat["category"], cat["revenue"], cat["gross_profit"])
+        ]
+        total_row = {
+            "Category": "Total", "Revenue": money(tot["revenue"]), "Units": num(tot["units"]),
+            "ASP": money(tot["revenue"] / tot["units"] if tot["units"] else None),
+            "Disc %": pctv(tot["discounts"] / tot["gross_sales"] if tot["gross_sales"] else None),
+            "GM %": pctv(tot["gross_profit"] / tot["revenue"] if tot["revenue"] else None),
+            "GM £": money(tot["gross_profit"]),
+            vcol_rev: fmt_pct(_vs_pct(tot["revenue"], cmp_tot["revenue"] if cmp_tot is not None else None)),
+            vcol_gm: fmt_pct(_vs_pct(
+                tot["gross_profit"] / tot["revenue"] if tot["revenue"] else None,
+                cmp_tot["gross_profit"] / cmp_tot["revenue"] if cmp_tot is not None and cmp_tot["revenue"] else None)),
+        }
+        disp = pd.concat([disp, pd.DataFrame([total_row])], ignore_index=True)
+        styler = disp.style.apply(
+            lambda row: [_TOTAL_ROW_STYLE if row["Category"] == "Total" else "" for _ in row], axis=1
+        ).map(lambda v: _style_pct_cell(v, "standard"), subset=[vcol_rev, vcol_gm])
+        st.dataframe(styler, use_container_width=True, hide_index=True, column_config=_tips({
+            "ASP": "Average selling price = Revenue ÷ Units",
+            "Disc %": "Discounts ÷ gross sales",
+            "GM %": "Gross profit ÷ revenue",
+            "GM £": "Revenue minus COGS",
+            vcol_rev: f"Revenue change vs {cmp_note}",
+            vcol_gm: f"Gross margin change vs {cmp_note}",
+        }))
+
+    # ── Funnel ──────────────────────────────────────────────────────
     with t2:
         f = agg.copy()
-        f["ATC %"] = (f["atc"] / f["views"].replace(0, np.nan) * 100).round(1)
-        f["Conversion %"] = (f["units"] / f["views"].replace(0, np.nan) * 100).round(1)
-        f = f.sort_values("views", ascending=False).head(20)
-        show = f[["product_title", "views", "atc", "ATC %", "units", "Conversion %"]].copy()
-        show.columns = ["Product", "Views", "Add to Carts", "ATC %", "Units", "Conversion %"]
-        for c in ["Views", "Add to Carts", "Units"]:
-            show[c] = show[c].map(num)
-        st.caption("Product-level funnel: views → add-to-cart rate → conversion.")
-        st.dataframe(show, use_container_width=True, hide_index=True, column_config=_tips({
+        f["atc_rate"] = f["atc"] / f["views"].replace(0, np.nan)
+        f["conv_rate"] = f["units"] / f["views"].replace(0, np.nan)
+        top = f.sort_values("views", ascending=False).head(20).copy()
+
+        prod_cmp = (agg_cmp.set_index("product_id")[["views", "units"]].to_dict("index")
+                    if not agg_cmp.empty else {})
+        vcol_conv = f"Conversion % {vs_label}"
+        disp = pd.DataFrame({"Product": top["product_title"]})
+        disp["Views"] = top["views"].map(num)
+        disp["Add to Carts"] = top["atc"].map(num)
+        disp["ATC %"] = top["atc_rate"].map(pctv)
+        disp["Units"] = top["units"].map(num)
+        disp["Conversion %"] = top["conv_rate"].map(pctv)
+        disp[vcol_conv] = [
+            fmt_pct(_vs_pct(conv, (prod_cmp[pid]["units"] / prod_cmp[pid]["views"])
+                           if pid in prod_cmp and prod_cmp[pid]["views"] else None))
+            for pid, conv in zip(top["product_id"], top["conv_rate"])
+        ]
+        tot_views, tot_atc, tot_units_f = f["views"].sum(), f["atc"].sum(), f["units"].sum()
+        cmp_views = agg_cmp["views"].sum() if not agg_cmp.empty else None
+        cmp_units_f = agg_cmp["units"].sum() if not agg_cmp.empty else None
+        total_row = {
+            "Product": "Total", "Views": num(tot_views), "Add to Carts": num(tot_atc),
+            "ATC %": pctv(tot_atc / tot_views if tot_views else None), "Units": num(tot_units_f),
+            "Conversion %": pctv(tot_units_f / tot_views if tot_views else None),
+            vcol_conv: fmt_pct(_vs_pct(tot_units_f / tot_views if tot_views else None,
+                                      cmp_units_f / cmp_views if cmp_views else None)),
+        }
+        disp = pd.concat([disp, pd.DataFrame([total_row])], ignore_index=True)
+        st.caption("Product-level funnel: views → add-to-cart rate → conversion. Showing the top 20 by "
+                   "views; Total reflects every product.")
+        styler = disp.style.apply(
+            lambda row: [_TOTAL_ROW_STYLE if row["Product"] == "Total" else "" for _ in row], axis=1
+        ).map(lambda v: _style_pct_cell(v, "standard"), subset=[vcol_conv])
+        st.dataframe(styler, use_container_width=True, hide_index=True, column_config=_tips({
             "Views": "GA4 product page views",
             "ATC %": "Add to carts ÷ views",
             "Conversion %": "Units sold ÷ views",
+            vcol_conv: f"Conversion rate change vs {cmp_note}",
         }))
+
+    # ── Stock ─────────────────────────────────────────────────────
     with t3:
         s = agg.copy()
-        s["weeks_cover"] = (s["on_hand"] / (s["units"] / weeks).replace(0, np.nan)).round(1)
+        s["weeks_cover"] = s["on_hand"] / (s["units"] / weeks).replace(0, np.nan)
         avail = (s["on_hand"] > 0).mean()
+        cmp_avail = (agg_cmp["on_hand"] > 0).mean() if not agg_cmp.empty else None
         metrics_row([
-            ("In-stock availability", pctv(avail), "Share of products with stock on hand"),
+            ("In-stock availability", pctv(avail), "Share of products with stock on hand",
+             _vs_pct(avail, cmp_avail)),
             ("Avg weeks cover", ratio(s["weeks_cover"].replace([np.inf], np.nan).mean()), "On hand ÷ weekly sell-through"),
             ("Out of stock", num((s["on_hand"] <= 0).sum()), "Products currently showing zero units on hand"),
         ])
         low = s[(s["weeks_cover"] <= 3) | (s["on_hand"] <= 0)].sort_values("weeks_cover")
-        st.caption("Products with ≤ 3 weeks cover (or out of stock) at the current rate.")
-        show = low[["product_title", "category", "on_hand", "weeks_cover"]].head(20).copy()
-        show.columns = ["Product", "Category", "On hand", "Weeks cover"]
-        show["On hand"] = show["On hand"].map(num)
-        st.dataframe(show, use_container_width=True, hide_index=True, column_config=_tips({
+        st.caption("Products with ≤ 3 weeks cover (or out of stock) at the current rate. Total reflects "
+                   "stock on hand across every product.")
+        disp = pd.DataFrame({"Product": low["product_title"].head(20).values})
+        disp["Category"] = low["category"].head(20).values
+        disp["On hand"] = [num(v) for v in low["on_hand"].head(20).values]
+        disp["Weeks cover"] = ["—" if pd.isna(v) else f"{v:.1f}" for v in low["weeks_cover"].head(20).values]
+        total_row = {"Product": "Total", "Category": "", "On hand": num(s["on_hand"].sum()), "Weeks cover": ""}
+        disp = pd.concat([disp, pd.DataFrame([total_row])], ignore_index=True)
+        styler = disp.style.apply(
+            lambda row: [_TOTAL_ROW_STYLE if row["Product"] == "Total" else "" for _ in row], axis=1)
+        st.dataframe(styler, use_container_width=True, hide_index=True, column_config=_tips({
             "Weeks cover": "On hand ÷ average weekly units sold — weeks of stock left at this rate",
+            "On hand": "Units currently in stock (Total = across every product, not just those shown)",
         }))
         if low.empty:
             st.success("No products low on stock. 🎉")
+
+    # ── Returns ───────────────────────────────────────────────────
     with t4:
         r = agg.copy()
         tot_u, tot_r, tot_rev, tot_ref = r["units"].sum(), r["returned"].sum(), r["revenue"].sum(), r["refund"].sum()
+        cmp_u = agg_cmp["units"].sum() if not agg_cmp.empty else None
+        cmp_r = agg_cmp["returned"].sum() if not agg_cmp.empty else None
         metrics_row([
-            ("Return rate (items)", pctv(tot_r / tot_u if tot_u else 0), "Returned units ÷ units sold"),
-            ("Return rate (value)", pctv(tot_ref / tot_rev if tot_rev else 0), "Refund value ÷ revenue"),
+            ("Return rate (items)", pctv(tot_r / tot_u if tot_u else None), "Returned units ÷ units sold",
+             _vs_pct(tot_r / tot_u if tot_u else None, cmp_r / cmp_u if cmp_u else None), "reverse"),
+            ("Return rate (value)", pctv(tot_ref / tot_rev if tot_rev else None), "Refund value ÷ revenue"),
             ("Refunds", money(tot_ref), "Total refund value for returns in this period"),
         ])
-        r["Return %"] = (r["returned"] / r["units"].replace(0, np.nan) * 100).round(1)
-        worst = r[r["returned"] > 0].sort_values("Return %", ascending=False).head(15)
-        show = worst[["product_title", "category", "units", "returned", "Return %"]].copy()
-        show.columns = ["Product", "Category", "Units", "Returned", "Return %"]
-        show["Units"] = show["Units"].map(num)
-        show["Returned"] = show["Returned"].map(num)
-        st.dataframe(show, use_container_width=True, hide_index=True, column_config=_tips({
+        r["return_rate"] = r["returned"] / r["units"].replace(0, np.nan)
+        worst = r[r["returned"] > 0].sort_values("return_rate", ascending=False).head(15)
+        disp = pd.DataFrame({"Product": worst["product_title"].values})
+        disp["Category"] = worst["category"].values
+        disp["Units"] = [num(v) for v in worst["units"].values]
+        disp["Returned"] = [num(v) for v in worst["returned"].values]
+        disp["Return %"] = [pctv(v) for v in worst["return_rate"].values]
+        total_row = {"Product": "Total", "Category": "", "Units": num(tot_u), "Returned": num(tot_r),
+                     "Return %": pctv(tot_r / tot_u if tot_u else None)}
+        disp = pd.concat([disp, pd.DataFrame([total_row])], ignore_index=True)
+        st.caption("Total reflects returns across every product, not just those shown.")
+        styler = disp.style.apply(
+            lambda row: [_TOTAL_ROW_STYLE if row["Product"] == "Total" else "" for _ in row], axis=1)
+        st.dataframe(styler, use_container_width=True, hide_index=True, column_config=_tips({
             "Return %": "Returned units ÷ units sold, for this product",
         }))
         rets = get_returns()
@@ -939,32 +1168,73 @@ def page_paid_media():
         _empty("No paid media data.")
         return
     spend = paid["spend"].sum()
+    conv_val = paid["platform_conversion_value_7d"].sum()
+
+    cmp_df = analytics.apply_filters(fact, cmp[0], cmp[1], filters)
+    cmp_paid = cmp_df[cmp_df["paid_ad_platform"] != sem.NA]
+    cmp_spend = cmp_paid["spend"].sum() if not cmp_paid.empty else None
+    cmp_total_rev = analytics.totals(cmp_df, ["revenue"])["revenue"] if not cmp_df.empty else None
+    cmp_orders = analytics.totals(cmp_df, ["orders"])["orders"] if not cmp_df.empty else None
+    cmp_conv_val = cmp_paid["platform_conversion_value_7d"].sum() if not cmp_paid.empty else None
+
     metrics_row([
-        ("Total spend", money(spend), "Total ad spend across all platforms"),
-        ("Blended MER", ratio(total_rev / spend) if spend else "—", "Total revenue ÷ total ad spend"),
-        ("Blended CAC", money(spend / orders) if orders else "—", "Spend ÷ orders"),
-        ("Platform ROAS", ratio(paid["platform_conversion_value_7d"].sum() / spend) if spend else "—",
-         "Platform-reported value ÷ spend"),
+        ("Total spend", money(spend), "Total ad spend across all platforms",
+         _vs_pct(spend, cmp_spend), "reverse"),
+        ("Blended MER", ratio(total_rev / spend) if spend else "—", "Total revenue ÷ total ad spend",
+         _vs_pct(total_rev / spend if spend else None, cmp_total_rev / cmp_spend if cmp_spend else None)),
+        ("Blended CAC", money(spend / orders) if orders else "—", "Spend ÷ orders",
+         _vs_pct(spend / orders if orders else None, cmp_spend / cmp_orders if cmp_orders else None), "reverse"),
+        ("Platform ROAS", ratio(conv_val / spend) if spend else "—", "Platform-reported value ÷ spend",
+         _vs_pct(conv_val / spend if spend else None, cmp_conv_val / cmp_spend if cmp_spend else None)),
     ])
     g = paid.groupby("paid_ad_platform").agg(spend=("spend", "sum"),
         impressions=("impressions", "sum"), clicks=("clicks", "sum"),
         conv=("platform_conversions_7d", "sum"),
         conv_val=("platform_conversion_value_7d", "sum")).reset_index()
-    g["ROAS"] = (g["conv_val"] / g["spend"]).round(2)
-    g["CTR %"] = (g["clicks"] / g["impressions"] * 100).round(2)
-    g["CPC"] = (g["spend"] / g["clicks"]).round(2)
-    g["CPA"] = (g["spend"] / g["conv"].replace(0, np.nan)).round(2)
+    g["roas"] = g["conv_val"] / g["spend"].replace(0, np.nan)
     st.bar_chart(g.set_index("paid_ad_platform"), y="spend", height=260)
-    show = g[["paid_ad_platform", "spend", "conv", "ROAS", "CTR %", "CPC", "CPA"]].copy()
-    show.columns = ["Platform", "Spend", "Conversions", "ROAS", "CTR %", "CPC", "CPA"]
-    show["Spend"] = show["Spend"].map(money)
-    show["Conversions"] = show["Conversions"].map(num)
-    st.dataframe(show, use_container_width=True, hide_index=True, column_config=_tips({
+
+    g_cmp = (cmp_paid.groupby("paid_ad_platform").agg(spend=("spend", "sum"),
+             conv_val=("platform_conversion_value_7d", "sum")).to_dict("index")
+             if not cmp_paid.empty else {})
+    vcol_spend, vcol_roas = f"Spend vs {cmp_label}", f"ROAS vs {cmp_label}"
+    disp = pd.DataFrame({"Platform": g["paid_ad_platform"]})
+    disp["Spend"] = g["spend"].map(money)
+    disp["Conversions"] = g["conv"].map(num)
+    disp["ROAS"] = g["roas"].map(ratio)
+    disp["CTR %"] = (g["clicks"] / g["impressions"].replace(0, np.nan)).map(pctv)
+    disp["CPC"] = (g["spend"] / g["clicks"].replace(0, np.nan)).map(money2)
+    disp["CPA"] = (g["spend"] / g["conv"].replace(0, np.nan)).map(money2)
+    disp[vcol_spend] = [fmt_pct(_vs_pct(s, g_cmp.get(pl, {}).get("spend")))
+                        for pl, s in zip(g["paid_ad_platform"], g["spend"])]
+    disp[vcol_roas] = [
+        fmt_pct(_vs_pct(r, (g_cmp.get(pl, {}).get("conv_val") / g_cmp.get(pl, {}).get("spend"))
+                       if g_cmp.get(pl, {}).get("spend") else None))
+        for pl, r in zip(g["paid_ad_platform"], g["roas"])
+    ]
+    total_row = {
+        "Platform": "Total", "Spend": money(spend), "Conversions": num(g["conv"].sum()),
+        "ROAS": ratio(conv_val / spend if spend else None),
+        "CTR %": pctv(g["clicks"].sum() / g["impressions"].sum() if g["impressions"].sum() else None),
+        "CPC": money2(spend / g["clicks"].sum() if g["clicks"].sum() else None),
+        "CPA": money2(spend / g["conv"].sum() if g["conv"].sum() else None),
+        vcol_spend: fmt_pct(_vs_pct(spend, cmp_spend)),
+        vcol_roas: fmt_pct(_vs_pct(conv_val / spend if spend else None,
+                                  cmp_conv_val / cmp_spend if cmp_spend else None)),
+    }
+    disp = pd.concat([disp, pd.DataFrame([total_row])], ignore_index=True)
+    styler = disp.style.apply(
+        lambda row: [_TOTAL_ROW_STYLE if row["Platform"] == "Total" else "" for _ in row], axis=1
+    ).map(lambda v: _style_pct_cell(v, "reverse"), subset=[vcol_spend]
+    ).map(lambda v: _style_pct_cell(v, "standard"), subset=[vcol_roas])
+    st.dataframe(styler, use_container_width=True, hide_index=True, column_config=_tips({
         "Conversions": "Platform-reported conversions (7-day window)",
         "ROAS": "Platform-reported conversion value ÷ spend",
         "CTR %": "Clicks ÷ impressions",
         "CPC": "Spend ÷ clicks",
         "CPA": "Spend ÷ conversions",
+        vcol_spend: f"Spend change vs {'last year' if cmp_label == 'LY' else 'the prior period'}",
+        vcol_roas: f"ROAS change vs {'last year' if cmp_label == 'LY' else 'the prior period'}",
     }))
     st.caption("Channel truth: these are *platform-reported* conversions (Meta/Google over-report). "
                "True channel-level revenue needs GA4→sales reconciliation — a next step.")
@@ -983,23 +1253,49 @@ def page_seo():
     if s.empty:
         _empty()
         return
-    metrics_row([("Clicks", num(s["clicks"].sum()), "Organic search clicks (Search Console)"),
-                 ("Impressions", num(s["impressions"].sum()), "Times your pages appeared in search results"),
-                 ("Avg position", ratio(s["position"].mean()), "Average search ranking position — lower is better"),
-                 ("CTR", pctv(s["clicks"].sum() / s["impressions"].sum()
-                  if s["impressions"].sum() else 0, 2), "Clicks ÷ impressions")])
+    s_cmp = _in_range(seo, cmp[0], cmp[1])
+    cmp_clicks = s_cmp["clicks"].sum() if not s_cmp.empty else None
+    cmp_impr = s_cmp["impressions"].sum() if not s_cmp.empty else None
+    cmp_pos = s_cmp["position"].mean() if not s_cmp.empty else None
+    metrics_row([
+        ("Clicks", num(s["clicks"].sum()), "Organic search clicks (Search Console)",
+         _vs_pct(s["clicks"].sum(), cmp_clicks)),
+        ("Impressions", num(s["impressions"].sum()), "Times your pages appeared in search results",
+         _vs_pct(s["impressions"].sum(), cmp_impr)),
+        ("Avg position", ratio(s["position"].mean()), "Average search ranking position — lower is better",
+         _vs_pct(s["position"].mean(), cmp_pos), "reverse"),
+        ("CTR", pctv(s["clicks"].sum() / s["impressions"].sum() if s["impressions"].sum() else None, 2),
+         "Clicks ÷ impressions"),
+    ])
     if "branded" in s:
         b = s.groupby("branded").agg(clicks=("clicks", "sum")).reset_index()
         b["branded"] = b["branded"].map({True: "Branded", False: "Non-branded"})
         st.bar_chart(b.set_index("branded"), y="clicks", height=220)
-    q = s.groupby("query").agg(clicks=("clicks", "sum"), impressions=("impressions", "sum"),
-        position=("position", "mean")).reset_index().sort_values("clicks", ascending=False).head(15)
-    q["position"] = q["position"].round(1)
-    q["clicks"] = q["clicks"].map(num)
-    q["impressions"] = q["impressions"].map(num)
-    q.columns = ["Query", "Clicks", "Impressions", "Avg position"]
-    st.dataframe(q, use_container_width=True, hide_index=True, column_config=_tips({
+
+    q_full = s.groupby("query").agg(clicks=("clicks", "sum"), impressions=("impressions", "sum"),
+        position=("position", "mean")).reset_index()
+    q = q_full.sort_values("clicks", ascending=False).head(15)
+    q_cmp = s_cmp.groupby("query")["clicks"].sum().to_dict() if not s_cmp.empty else {}
+    vcol_clicks = f"Clicks vs {cmp_label}"
+    disp = pd.DataFrame({"Query": q["query"]})
+    disp["Clicks"] = q["clicks"].map(num)
+    disp["Impressions"] = q["impressions"].map(num)
+    disp["Avg position"] = q["position"].map(lambda v: "—" if pd.isna(v) else f"{v:.1f}")
+    disp[vcol_clicks] = [fmt_pct(_vs_pct(c, q_cmp.get(qq))) for qq, c in zip(q["query"], q["clicks"])]
+    tot_pos = q_full["position"].mean() if len(q_full) else None
+    total_row = {
+        "Query": "Total", "Clicks": num(q_full["clicks"].sum()), "Impressions": num(q_full["impressions"].sum()),
+        "Avg position": "—" if tot_pos is None or pd.isna(tot_pos) else f"{tot_pos:.1f}",
+        vcol_clicks: fmt_pct(_vs_pct(q_full["clicks"].sum(), cmp_clicks)),
+    }
+    disp = pd.concat([disp, pd.DataFrame([total_row])], ignore_index=True)
+    st.caption("Showing the top 15 queries by clicks; Total reflects every query.")
+    styler = disp.style.apply(
+        lambda row: [_TOTAL_ROW_STYLE if row["Query"] == "Total" else "" for _ in row], axis=1
+    ).map(lambda v: _style_pct_cell(v, "standard"), subset=[vcol_clicks])
+    st.dataframe(styler, use_container_width=True, hide_index=True, column_config=_tips({
         "Avg position": "Average ranking position for this query — lower is better",
+        vcol_clicks: f"Clicks change vs {'last year' if cmp_label == 'LY' else 'the prior period'}",
     }))
 
 
@@ -1019,19 +1315,14 @@ def page_forecast():
             budget = analytics.target_total(targets, cur[0], cur[1], m)
             lyv = analytics.totals(ly_df, [m])[m]
             rows.append({
-                "Metric": sem.nice(m), "Actual": sem.fmt(m, actual),
+                "_key": m, "Metric": sem.nice(m), "Actual": sem.fmt(m, actual),
                 "Budget": sem.fmt(m, budget) if budget else "—",
                 "v Budget": fmt_pct((actual / budget - 1) * 100) if budget else "—",
                 "LY": sem.fmt(m, lyv),
                 "v LY": fmt_pct((actual / lyv - 1) * 100) if lyv else "—",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config=_tips({
-            "Actual": "Total for the selected period",
-            "Budget": "Target set for the same period",
-            "v Budget": "Actual vs Budget, %",
-            "LY": "Same period last year",
-            "v LY": "Actual vs last year, %",
-        }))
+        _html_table(rows, "_key", metric_help, pct_cols=["v Budget", "v LY"])
+        st.caption("Hover a metric name for its definition.")
     with t2:
         st.caption("Pacing the current month to a linear run-rate.")
         month_start = ref.replace(day=1)
@@ -1043,17 +1334,12 @@ def page_forecast():
             actual = analytics.totals(mtd, [m])[m]
             proj = actual / elapsed * dim if elapsed else 0
             tgt = analytics.target_total(targets, month_start, month_start.replace(day=dim), m)
-            rows.append({"Metric": sem.nice(m), "MTD actual": sem.fmt(m, actual),
+            rows.append({"_key": m, "Metric": sem.nice(m), "MTD actual": sem.fmt(m, actual),
                          "Projected month": sem.fmt(m, proj),
                          "Month budget": sem.fmt(m, tgt) if tgt else "—",
                          "Projected vs budget": fmt_pct((proj / tgt - 1) * 100) if tgt else "—"})
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config=_tips({
-            "MTD actual": "Actual total, month to date",
-            "Projected month": "MTD actual ÷ days elapsed × days in month — a straight-line projection",
-            "Month budget": "Target for the full month",
-            "Projected vs budget": "Projected month-end vs the month's budget, %",
-        }))
-        st.caption(f"Day {elapsed} of {dim}. Linear run-rate projection.")
+        _html_table(rows, "_key", metric_help, pct_cols=["Projected vs budget"])
+        st.caption(f"Day {elapsed} of {dim}. Linear run-rate projection. Hover a metric name for its definition.")
 
 
 # ── Orderbank ────────────────────────────────────────────────────
@@ -1097,16 +1383,28 @@ def page_order_insight():
         _empty()
         return
     orders = l.groupby("order_id").agg(value=("net_sales", "sum"), items=("quantity", "sum")).reset_index()
+
+    l_cmp = _filt(_in_range(li, cmp[0], cmp[1], col="created_at"), filters)
+    if not l_cmp.empty:
+        orders_cmp = l_cmp.groupby("order_id").agg(value=("net_sales", "sum"), items=("quantity", "sum")).reset_index()
+        cmp_order_ct, cmp_aov = len(orders_cmp), orders_cmp["value"].mean()
+        cmp_avg_items, cmp_units = orders_cmp["items"].mean(), l_cmp["quantity"].sum()
+    else:
+        cmp_order_ct = cmp_aov = cmp_avg_items = cmp_units = None
+
     metrics_row([
-        ("Orders", num(len(orders)), "Orders placed in this period"),
-        ("AOV", money(orders["value"].mean()), "Average order value = Revenue ÷ Orders"),
+        ("Orders", num(len(orders)), "Orders placed in this period", _vs_pct(len(orders), cmp_order_ct)),
+        ("AOV", money(orders["value"].mean()), "Average order value = Revenue ÷ Orders",
+         _vs_pct(orders["value"].mean(), cmp_aov)),
         ("Median order", money(orders["value"].median()), "Half of orders are below this"),
         ("P90 order", money(orders["value"].quantile(0.9)), "Top 10% of orders exceed this"),
     ])
     metrics_row([
-        ("Avg items / order", ratio(orders["items"].mean()), "Units ÷ orders"),
+        ("Avg items / order", ratio(orders["items"].mean()), "Units ÷ orders",
+         _vs_pct(orders["items"].mean(), cmp_avg_items)),
         ("Single-item orders", pctv((orders["items"] == 1).mean()), "Share of orders containing exactly one item"),
-        ("Units sold", num(l["quantity"].sum()), "Total units across all orders in this period"),
+        ("Units sold", num(l["quantity"].sum()), "Total units across all orders in this period",
+         _vs_pct(l["quantity"].sum(), cmp_units)),
     ])
     st.markdown("**Order value distribution**")
     hist = alt.Chart(orders).mark_bar(color="#2563EB", opacity=0.8).encode(
@@ -1196,14 +1494,11 @@ def page_benchmarks():
         gap = (actual / bench - 1) * 100 if bench else None
         if sem.metric_meta(m)["cf"] == "reverse":
             gap = -gap if gap is not None else None
-        rows.append({"Metric": sem.nice(m), "You": sem.fmt(m, actual),
+        rows.append({"_key": m, "Metric": sem.nice(m), "You": sem.fmt(m, actual),
                      "Benchmark": sem.fmt(m, bench), "vs Benchmark": fmt_pct(gap)})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, column_config=_tips({
-        "You": "Your actual value for the selected period",
-        "Benchmark": "Illustrative category benchmark",
-        "vs Benchmark": "% difference vs benchmark — positive always means better, direction-aware",
-    }))
-    st.caption("Positive = better than benchmark (direction-aware for cost/abandonment metrics).")
+    _html_table(rows, "_key", metric_help, pct_cols=[("vs Benchmark", "standard")])
+    st.caption("Positive = better than benchmark (direction-aware for cost/abandonment metrics). "
+               "Hover a metric name for its definition.")
 
 
 PAGES = {
