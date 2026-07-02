@@ -413,13 +413,15 @@ def _spark_chart(spark, metric):
 
 def _kpi_card(row):
     m = row["metric"]
+    pills = _pill(m, row["delta_pct"], cmp_label)
+    if row.get("target") is not None:  # only show the target pill when a target exists
+        pills += _pill(m, row["vtarg_pct"], "Targ")
     with st.container(border=True):
         st.markdown(
             f'<div class="kpi-head"><span class="kpi-name">{sem.nice(m)}</span>'
             f'<span class="info" title="{metric_help(m)}">ⓘ</span></div>'
             f'<div class="kpi-value" title="{sem.fmt(m, row["value"])}">{compact(m, row["value"])}</div>'
-            f'<div>{_pill(m, row["delta_pct"], cmp_label)}'
-            f'{_pill(m, row["vtarg_pct"], "Targ")}</div>',
+            f'<div>{pills}</div>',
             unsafe_allow_html=True)
         spark = analytics.sparkline(fact, m, cur[1], 8, filters)
         if len(spark) > 1:
